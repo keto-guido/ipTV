@@ -6,3 +6,4 @@ hls/
 .env
 config/jwt_secret
 config/local.json
+config/secrets.original.env
