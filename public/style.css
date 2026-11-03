@@ -72,3 +72,8 @@ body.gd{padding-bottom:calc(60px + env(safe-area-inset-bottom))}
 .g .hdr .tl{height:24px}.g .tk{position:absolute;top:4px;font-size:11px;opacity:.6}
 .g .pg{position:absolute;top:2px;bottom:2px;background:#161616;border-radius:4px;padding:3px 5px;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-left:2px solid #000}
 .g .pg.live{background:#1d2a3a}.g .now{position:absolute;top:0;bottom:0;width:1px;background:#e33;z-index:1}
+/* Back to App Hub dashboard (matches hub v7 ghost pill: #3f3f3f border, #272727 hover, 999px radius, 600 weight) */
+a.dash,.row>a.dash{display:inline-flex;align-items:center;min-height:44px;min-width:44px;padding:0 2px;font-size:14px;color:#fff;text-decoration:none;flex:none}
+a.dash span{display:inline-flex;align-items:center;height:32px;padding:0 12px;border:1px solid #3f3f3f;border-radius:999px;font-weight:600;white-space:nowrap;background:transparent}
+a.dash:active span,a.dash:hover span{background:#272727;border-color:#5a5a5a}
+.top a.dash{margin-right:2px}
