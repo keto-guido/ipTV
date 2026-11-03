@@ -8,6 +8,7 @@ const zlib = require('zlib');
 const { Readable } = require('stream');
 const { cfg, getProvider, log, redact } = require('./config');
 const provider = require('./provider');
+const PE = require('./pubepg');
 
 const FILE = path.join(cfg.DATA, 'epg.json');
 const TTL = 12 * 3600e3, MANUAL_MIN = 3600e3, BEFORE = 2 * 3600, AFTER = 48 * 3600, DESC = 140;
@@ -29,21 +30,68 @@ let cache = null, busy = null, lastFetch = 0, lastError = '';
 let byStream = new Map(); // stream id -> programmes array
 let byEpg = new Map(), lower = new Map(); // epg id -> [stream ids]; epg id -> lowercased 'title desc' per programme
 
+// Public fallback guide (epgshare01): fills only channels with no provider EPG. Never contacts the IPTV provider.
+const PUB_FILE = path.join(cfg.DATA, 'epg_public.json'), PUB_TTL = 12 * 3600e3;
+const OVR_FILE = path.join(__dirname, '..', 'config', 'epg_overrides.json'); // optional, gitignored: { "<streamId or channel name>": "<public channel id>" }
+let pub = null, pubBusy = null, pubErr = '', pubJit = Math.random() * 3600e3;
+let progs = new Map(); // index key -> programmes
+function addIdx(eid, arr, sid) {
+  byStream.set(sid, arr);
+  if (!byEpg.has(eid)) { byEpg.set(eid, []); progs.set(eid, arr); lower.set(eid, arr.map(p => (p[2] + ' ' + (p[3] || '')).toLowerCase())); }
+  byEpg.get(eid).push(sid);
+}
+const provEid = c => cache && (c.epg && cache.ch[c.epg] ? c.epg : cache.map && cache.map[c.id]);
 function index() {
-  byStream = new Map();
+  byStream = new Map(); byEpg = new Map(); lower = new Map(); progs = new Map();
   const list = provider.load();
-  if (!cache || !list) return;
-  byEpg = new Map(); lower = new Map();
-  for (const c of list.channels) {
-    const eid = c.epg && cache.ch[c.epg] ? c.epg : cache.map && cache.map[c.id];
-    if (!eid || !cache.ch[eid]) continue;
-    byStream.set(c.id, cache.ch[eid]);
-    if (!byEpg.has(eid)) { byEpg.set(eid, []); lower.set(eid, cache.ch[eid].map(p => (p[2] + ' ' + (p[3] || '')).toLowerCase())); }
-    byEpg.get(eid).push(c.id);
+  if (!list) return;
+  if (cache) for (const c of list.channels) { const eid = provEid(c); if (eid && cache.ch[eid]) addIdx(eid, cache.ch[eid], c.id); }
+  if (pub) for (const sid in pub.map) { const pid = pub.map[sid]; if (!byStream.has(sid) && pub.ch[pid]) addIdx('p:' + pid, pub.ch[pid], sid); } // provider always wins
+}
+// AM | USA / AM | CA channels with no provider guide data.
+function gaps() {
+  const list = provider.load(); if (!list) return [];
+  const cats = new Map(list.categories.filter(c => REL.test(c.name)).map(c => [c.id, /USA/i.test(c.name)]));
+  return list.channels.filter(c => cats.has(c.cat) && !(provEid(c) && cache.ch[provEid(c)])).map(c => ({ id: c.id, name: c.name, us: cats.get(c.cat) }));
+}
+async function gunzipMaybe(body) {
+  const it = Readable.fromWeb(body)[Symbol.asyncIterator]();
+  const first = await it.next(); const h = first.done ? Buffer.alloc(0) : Buffer.from(first.value);
+  const s = Readable.from((async function* () { yield h; for (let x = await it.next(); !x.done; x = await it.next()) yield x.value; })());
+  return h[0] === 0x1f && h[1] === 0x8b ? s.pipe(zlib.createGunzip()) : s;
+}
+async function fetchPub() {
+  const t0 = Date.now(), now = Math.floor(t0 / 1000), lo = now - PE.BEFORE, hi = now + PE.AFTER;
+  const gl = gaps(); let ov = {}; try { ov = JSON.parse(fs.readFileSync(OVR_FILE, 'utf8')); } catch {}
+  log(`epg-public: fetching (${gl.length} gap channels)`);
+  const allPub = [], ch = Object.create(null); let ok = 0;
+  for (const s of PE.SOURCES) {
+    try {
+      const r = await fetch(s.url, { headers: { 'User-Agent': 'iptv-relay-guide/1.0' }, signal: AbortSignal.timeout(10 * 60e3) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const res = await PE.parse(await gunzipMaybe(r.body), chans => { allPub.push(...chans); return new Set(PE.match(gl, chans, ov).map.values()); }, lo, hi);
+      Object.assign(ch, res.ch); ok++;
+    } catch (e) { log('epg-public:', s.n, 'failed:', e.message); }
   }
+  if (!ok) throw new Error('all public sources failed');
+  const { map, how } = PE.match(gl, allPub, ov);
+  const keep = Object.create(null), m = Object.create(null);
+  for (const [sid, pid] of map) if (ch[pid]) { keep[pid] = ch[pid].sort((a, b) => a[0] - b[0]); m[sid] = pid; }
+  const data = { fetchedAt: t0, ch: keep, map: m };
+  const json = JSON.stringify(data); fs.mkdirSync(cfg.DATA, { recursive: true }); fs.writeFileSync(PUB_FILE, json);
+  pub = data; index();
+  const kinds = {}; for (const k in m) kinds[how[k]] = (kinds[how[k]] || 0) + 1;
+  const stats = { sources: ok, gaps: gl.length, matched: Object.keys(m).length, how: kinds, channels: Object.keys(keep).length, mbCache: +(json.length / 1048576).toFixed(1), sec: +((Date.now() - t0) / 1000).toFixed(1) };
+  log('epg-public:', JSON.stringify(stats)); data.stats = stats;
+  return stats;
+}
+function runPub() {
+  if (!pubBusy) pubBusy = fetchPub().then(s => { pubErr = ''; pubJit = Math.random() * 3600e3; return s; }, e => { pubErr = e.message; log('epg-public error:', e.message); }).finally(() => { pubBusy = null; });
+  return pubBusy;
 }
 function load() {
   try { cache = JSON.parse(fs.readFileSync(FILE, 'utf8')); lastFetch = cache.fetchedAt; } catch { cache = null; }
+  try { pub = JSON.parse(fs.readFileSync(PUB_FILE, 'utf8')); } catch { pub = null; }
   index();
 }
 
@@ -164,6 +212,7 @@ function run() {
 }
 
 module.exports = {
+  load, // (re)read caches from disk; no network
   init() {
     load();
     if (process.env.EPG_AUTO === '0') return;
@@ -181,6 +230,10 @@ module.exports = {
       if (due || thin) { lastFetch = Date.now(); run().catch(() => {}); }
     };
     setTimeout(check, 60e3).unref(); setInterval(check, 5 * 60e3).unref();
+    // Public fallback: at most every 12h (+0..60 min jitter); also retried after failures on the same cadence.
+    let pubTried = 0;
+    const pcheck = () => { const last = Math.max(pub ? pub.fetchedAt : 0, pubTried); if (!pubBusy && provider.load() && Date.now() - last > PUB_TTL + pubJit) { pubTried = Date.now(); runPub(); } };
+    setTimeout(pcheck, 120e3).unref(); setInterval(pcheck, 30 * 60e3).unref();
   },
   reindex: index,
   setExtra(f) { extra = f; },
@@ -190,6 +243,8 @@ module.exports = {
     lastFetch = Date.now();
     return run();
   },
+  publicInfo() { return { fetchedAt: pub ? pub.fetchedAt : 0, matched: pub ? Object.keys(pub.map).length : 0, busy: !!pubBusy, error: pubErr || undefined, stats: pub && pub.stats }; },
+  refreshPublic: runPub,
   info() { return { fetchedAt: cache ? cache.fetchedAt : 0, channels: cache ? Object.keys(cache.ch).length : 0, busy: !!busy, error: lastError || undefined, stats: cache && cache.stats }; },
   // [now, next] for each stream id
   nowNext(ids) {
@@ -207,7 +262,7 @@ module.exports = {
     q = String(q || '').toLowerCase().trim(); if (q.length < 2) return [];
     const now = Date.now() / 1000, hi = now + 86400, hits = [];
     for (const [eid, ids] of byEpg) {
-      const ps = cache.ch[eid], lc = lower.get(eid);
+      const ps = progs.get(eid), lc = lower.get(eid);
       for (let i = 0; i < ps.length; i++) {
         const p = ps[i]; if (p[1] <= now || p[0] >= hi || !lc[i].includes(q)) continue;
         for (const id of ids) if (ok(id)) hits.push({ id, p });
