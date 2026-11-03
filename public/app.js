@@ -10,7 +10,29 @@ let view = 'watch', cur = null;          // cur: {cat,name} when inside a group
 const toast = t => { const e = $('toast'); e.textContent = t; e.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => { e.hidden = true; }, 2600); };
 
 // ---------- player ----------
-function play(v) { v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); }
+// Sound: remember the user's mute choice; try unmuted first, fall back to muted + one big "Tap for sound".
+const pref = { get muted() { return localStorage.getItem('tvMuted') === '1'; }, set(m) { try { localStorage.setItem('tvMuted', m ? '1' : '0'); } catch {} } };
+let ours = false; // true while the app (not the user) changes muted
+function setMuted(v, m) { if (v.muted === m) return; ours = true; v.muted = m; setTimeout(() => { ours = false; }, 0); }
+const front = () => [...tiles.values()].find(t => !t.el.classList.contains('bg'));
+document.body.insertAdjacentHTML('beforeend', '<button id="tapsnd" class="tapsnd" hidden>\u{1F50A} Tap for sound</button>');
+let gate = null;
+function soundGate(on) {
+  $('tapsnd').hidden = !on;
+  if (!on) { if (gate) { document.removeEventListener('touchend', gate, true); document.removeEventListener('click', gate, true); gate = null; } return; }
+  if (gate) return;
+  gate = () => { const t = front(); soundGate(false); if (t) { setMuted(t.video, false); pref.set(false); t.video.play().catch(() => {}); } };
+  document.addEventListener('touchend', gate, true); document.addEventListener('click', gate, true);
+}
+function play(v) {
+  const bg = !!v.closest('.tile.bg'), want = !bg && !pref.muted;
+  setMuted(v, !want);
+  v.play().then(() => { if (want) soundGate(false); }).catch(() => {
+    if (!want) return;
+    setMuted(v, true); v.play().catch(() => {}); soundGate(true);
+  });
+}
+function resume() { const t = front(); if (t && t.loaded && t.video.paused) play(t.video); }
 function attach(t, id) {
   const src = `${B}/hls/${id}/index.m3u8`;
   t.loaded = true;
@@ -51,10 +73,11 @@ async function tick() {
     let t = tiles.get(c.id);
     if (!t) {
       const el = document.createElement('div'); el.className = 'tile';
-      el.innerHTML = `<video playsinline webkit-playsinline autoplay controls></video><div class="tag"><b></b><span></span></div><div class="tb">${canPip ? '<button class="ib" data-pip aria-label="Picture in picture">⧉</button>' : ''}<button class="ib" data-fs aria-label="Fullscreen">⛶</button></div>`;
+      el.innerHTML = `<video playsinline webkit-playsinline autoplay controls x-webkit-airplay="allow"></video><div class="tag"><b></b><span></span></div><div class="tb">${canPip ? '<button class="ib" data-pip aria-label="Picture in picture">⧉</button>' : ''}<button class="ib" data-fs aria-label="Fullscreen">⛶</button></div>`;
       grid.appendChild(el);
       t = { el, video: el.querySelector('video'), name: c.name }; tiles.set(c.id, t);
-      t.video.muted = live.length > 1;
+      t.video.muted = true;
+      t.video.addEventListener('volumechange', () => { if (!ours && !t.el.classList.contains('bg')) { pref.set(t.video.muted); if (!t.video.muted) soundGate(false); } });
       el.querySelector('[data-fs]').onclick = () => fullscreen(t);
       const pb = el.querySelector('[data-pip]'); if (pb) pb.onclick = () => pip(t);
       added.push(c.name);
@@ -81,20 +104,20 @@ function layout(live) {
   if (focus !== 'grid' && !tiles.has(focus)) focus = live[0].id;
   sw.hidden = true; // switching lives in ON NOW
   sw.innerHTML = live.map(c => `<button data-f="${c.id}" class="${focus === c.id ? 'on' : ''}">${esc(c.name)}</button>`).join('') + `<button data-f="grid" class="${focus === 'grid' ? 'on' : ''}" aria-label="Grid">▦</button>`;
-  for (const [id, t] of tiles) { const bg = focus !== 'grid' && id !== focus; t.el.classList.toggle('bg', bg); if (bg) t.video.muted = true; }
+  for (const [id, t] of tiles) { const bg = focus !== 'grid' && id !== focus; t.el.classList.toggle('bg', bg); if (bg) setMuted(t.video, true); }
   grid.className = 'grid n' + (focus === 'grid' ? Math.min(live.length, 4) : 1);
 }
 $('switch').onclick = e => {
   const b = e.target.closest('[data-f]'); if (!b) return;
   focus = b.dataset.f; layout(lastLive);
-  const t = tiles.get(focus); if (t) { for (const o of tiles.values()) o.video.muted = o !== t; t.video.muted = false; play(t.video); }
+  const t = tiles.get(focus); if (t) { for (const o of tiles.values()) if (o !== t) setMuted(o.video, true); play(t.video); }
 };
 
 const sel = id => S.channels.find(c => c.id === id || c.rep === id); // matches representative or alternate id
 const isOn = id => { const c = sel(id); return !!c && c.status !== 'down'; };
 function watchCh(id) {
   focus = id; if (view !== 'watch') show('watch'); layout(lastLive);
-  const t = tiles.get(id); if (t) { for (const o of tiles.values()) o.video.muted = o !== t; t.video.muted = false; play(t.video); }
+  const t = tiles.get(id); if (t) { for (const o of tiles.values()) if (o !== t) setMuted(o.video, true); play(t.video); }
   renderNow(true);
 }
 
@@ -249,4 +272,5 @@ let mt; $('mq').oninput = () => { clearTimeout(mt); mt = setTimeout(renderManage
 loadFavs().catch(() => {});
 tick().then(() => { const h = location.hash.slice(1); if (/^(watch|groups|favs)$/.test(h)) { history.replaceState(null, '', location.pathname); go(h); } else show(tiles.size ? 'watch' : 'groups'); });
 setInterval(tick, 5000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { resume(); tick(); } });
+window.addEventListener('pageshow', e => { if (e.persisted) { resume(); tick(); } });

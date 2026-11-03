@@ -43,6 +43,8 @@ h2.sec{font-size:13px;font-weight:600;opacity:.5;margin:14px 4px 2px;text-transf
 .tg{cursor:pointer}.tg input{position:absolute;opacity:0;pointer-events:none}.sw{flex:none;width:50px;height:30px;border-radius:15px;background:#39393d;position:relative;transition:background .15s}
 .sw::after{content:'';position:absolute;left:2px;top:2px;width:26px;height:26px;border-radius:50%;background:#fff;transition:transform .15s}
 .tg input:checked+.sw{background:#30d158}.tg input:checked+.sw::after{transform:translateX(20px)}
+/* sound gate */
+.tapsnd{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 48px + 20vw);transform:translateX(-50%);z-index:9;background:#0a84ff;color:#fff;border:0;border-radius:26px;padding:14px 24px;font-size:18px;font-weight:600;box-shadow:0 6px 24px #000c}
 /* sheet & toast */
 .sheet{position:fixed;inset:0;z-index:10;background:#0008;display:flex;align-items:flex-end}
 .sbox{width:100%;background:#1c1c1e;border-radius:16px 16px 0 0;padding:16px 14px calc(14px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:8px}
