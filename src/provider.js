@@ -21,7 +21,10 @@ function rank(name) {
 }
 function merge(raw) {
   const groups = new Map();
+  // Event/PPV slots share placeholder names ("NO EVENT") but carry different events: never merge them.
+  const evCat = new Set((raw.categories || []).filter(c => /EVENT|PPV/i.test(c.name)).map(c => c.id));
   for (const c of raw.channels) {
+    if (evCat.has(c.cat) || /EVENT|PPV|\d{1,2}:\d\d/i.test(c.name)) { groups.set('#' + c.id, [c]); continue; }
     const n = norm(c.name) || c.name;
     const key = /^[\p{L}\p{N}]{1,6} ?[-|:] /u.test(n) ? n : c.cat + '|' + n; // cross-category only with a prefix like "US - "
     (groups.get(key) || groups.set(key, []).get(key)).push(c);
