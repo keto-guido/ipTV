@@ -70,7 +70,7 @@ async function tick() {
   lastLive = live; layout(live);
   empty.hidden = live.length > 0;
   if (view === 'watch') renderNow();
-  for (const el of list.querySelectorAll('.ch')) el.classList.toggle('on', !!S.channels.find(c => c.id === el.dataset.id && c.status !== 'down'));
+  for (const el of list.querySelectorAll('.ch')) el.classList.toggle('on', isOn(el.dataset.id));
 }
 
 // Switcher: with 2+ active streams, one is shown and the others stay attached (muted, off-screen) so switching is instant.
@@ -79,7 +79,7 @@ function layout(live) {
   const sw = $('switch');
   if (live.length < 2) { sw.hidden = true; for (const t of tiles.values()) t.el.classList.remove('bg'); grid.className = 'grid n' + live.length; return; }
   if (focus !== 'grid' && !tiles.has(focus)) focus = live[0].id;
-  sw.hidden = false;
+  sw.hidden = true; // switching lives in ON NOW
   sw.innerHTML = live.map(c => `<button data-f="${c.id}" class="${focus === c.id ? 'on' : ''}">${esc(c.name)}</button>`).join('') + `<button data-f="grid" class="${focus === 'grid' ? 'on' : ''}" aria-label="Grid">?</button>`;
   for (const [id, t] of tiles) { const bg = focus !== 'grid' && id !== focus; t.el.classList.toggle('bg', bg); if (bg) t.video.muted = true; }
   grid.className = 'grid n' + (focus === 'grid' ? Math.min(live.length, 4) : 1);
@@ -89,6 +89,14 @@ $('switch').onclick = e => {
   focus = b.dataset.f; layout(lastLive);
   const t = tiles.get(focus); if (t) { for (const o of tiles.values()) o.video.muted = o !== t; t.video.muted = false; play(t.video); }
 };
+
+const sel = id => S.channels.find(c => c.id === id || c.rep === id); // matches representative or alternate id
+const isOn = id => { const c = sel(id); return !!c && c.status !== 'down'; };
+function watchCh(id) {
+  focus = id; if (view !== 'watch') show('watch'); layout(lastLive);
+  const t = tiles.get(id); if (t) { for (const o of tiles.values()) o.video.muted = o !== t; t.video.muted = false; play(t.video); }
+  renderNow(true);
+}
 
 // ---------- navigation ----------
 function show(v, opt = {}) {
@@ -130,8 +138,9 @@ async function renderGroups() {
 // ---------- channels (paged) ----------
 let seq = 0, got = 0, total = 0, loading = false;
 const crow = (c, e) => {
-  const on = S.channels.find(x => x.id === c.id && x.status !== 'down'), f = FAV.has(c.id);
-  return `<div class="card ch${on ? ' on' : ''}" data-id="${c.id}" data-name="${esc(c.name)}">${c.icon ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(c.icon)}" onerror="this.style.visibility='hidden'">` : '<img alt="">'}<span class="n"><span>${esc(c.name)}</span><span class="sub">${nn(e && e[c.id])}</span></span><button class="star${f ? ' on' : ''}" data-star="${c.id}" aria-label="Favorite">${f ? '★' : '☆'}</button></div>`;
+  const s = sel(c.id), on = s && s.status !== 'down', f = FAV.has(c.id);
+  const w = on && (lastLive.length < 2 || focus === s.id);
+  return `<div class="card ch${on ? ' on' : ''}${w ? ' watching' : ''}${s && !on ? ' down' : ''}" data-id="${c.id}" data-name="${esc(c.name)}">${c.icon ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(c.icon)}" onerror="this.style.visibility='hidden'">` : '<img alt="">'}<span class="n"><span>${esc(c.name)}</span><span class="sub">${nn(e && e[c.id])}</span></span><button class="star${f ? ' on' : ''}" data-star="${c.id}" aria-label="Favorite">${f ? '★' : '☆'}</button></div>`;
 };
 async function renderChannels(append) {
   const s = ++seq, q = $('q').value.trim();
@@ -175,14 +184,14 @@ list.onclick = onRows; $('nowlist').onclick = onRows;
 let nowKey = '', nowAt = 0;
 async function renderNow(force) {
   const live = S.channels.filter(c => c.status !== 'down');
-  const key = live.map(c => c.id).join() + '|' + FAV.size;
+  const key = S.channels.map(c => c.id + c.status).join() + '|' + FAV.size + '|' + focus;
   if (!force && key === nowKey && Date.now() - nowAt < 60e3) return;
   nowKey = key; nowAt = Date.now();
   const favs = await loadFavs().catch(() => []);
   const ids = [...new Set([...live.map(c => c.id), ...favs.map(c => c.id)])].slice(0, 300);
   const e = await nowNext(ids).catch(() => ({}));
-  const a = live.map(c => crow({ id: c.id, name: c.name }, e)).join('');
-  const b = favs.filter(f => !live.find(c => c.id === f.id)).slice(0, 60).map(c => crow(c, e)).join('');
+  const a = S.channels.map(c => crow({ id: c.id, name: c.name }, e)).join('');
+  const b = favs.filter(f => !sel(f.id)).slice(0, 60).map(c => crow(c, e)).join('');
   $('nowlist').innerHTML = (a ? '<h2>On now</h2>' + a : '') + (b ? '<h2>Favorites</h2>' + b : '');
 }
 

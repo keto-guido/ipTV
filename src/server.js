@@ -107,7 +107,7 @@ async function handle(req, res) {
     return file(res, path.join(ch.dir(mm[1]), mm[2]), mm[2].endsWith('.ts') ? 'private, max-age=60' : 'no-store');
   }
   if (m === 'GET' && p === '/api/status')
-    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, channels: ch.list() });
+    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
   if (m === 'GET' && p === '/guide') return send(res, 200, page('guide.html'), TYPES['.html']);
   // ---- guide & favorites: served from local cache only ----
   if (m === 'GET' && p === '/api/favorites') return send(res, 200, byIds(favs[user.sub] || []));
