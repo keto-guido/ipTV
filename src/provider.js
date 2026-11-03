@@ -11,11 +11,11 @@ let cache = null, lastFetch = 0, inflight = null;
 const TAGS = /\b(?:UHD|FHD|HD|SD|[48]K|HEVC|H\.?26[45]|[256]0 ?FPS|BACKUP ?\d?|BK|B\/U|ALT|RAW)\b/g;
 const BACKUP = /\b(?:BACKUP|BK|B\/U|ALT)\b/;
 function norm(name) {
-  return String(name).toUpperCase().replace(/[���]/g, '').replace(TAGS, ' ')
+  return String(name).toUpperCase().replace(/[²³¹]/g, '').replace(TAGS, ' ')
     .replace(/[^\p{L}\p{N}:&+'|-]+/gu, ' ').replace(/(\s*[-|:]\s*)+$/, '').replace(/\(\s*\)|\[\s*\]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 function rank(name) {
-  const s = String(name).toUpperCase().replace(/[���]/g, '');
+  const s = String(name).toUpperCase().replace(/[²³¹]/g, '');
   const tier = /\b(?:UHD|[48]K)\b/.test(s) ? 3 : /\bFHD\b/.test(s) ? 2 : /\bHD\b/.test(s) ? 1 : 0;
   return tier * 4 + (BACKUP.test(s) ? 2 : 0) + (/\b(?:HEVC|H\.?265)\b/.test(s) ? 1 : 0);
 }

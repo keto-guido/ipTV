@@ -80,7 +80,7 @@ function layout(live) {
   if (live.length < 2) { sw.hidden = true; for (const t of tiles.values()) t.el.classList.remove('bg'); grid.className = 'grid n' + live.length; return; }
   if (focus !== 'grid' && !tiles.has(focus)) focus = live[0].id;
   sw.hidden = true; // switching lives in ON NOW
-  sw.innerHTML = live.map(c => `<button data-f="${c.id}" class="${focus === c.id ? 'on' : ''}">${esc(c.name)}</button>`).join('') + `<button data-f="grid" class="${focus === 'grid' ? 'on' : ''}" aria-label="Grid">?</button>`;
+  sw.innerHTML = live.map(c => `<button data-f="${c.id}" class="${focus === c.id ? 'on' : ''}">${esc(c.name)}</button>`).join('') + `<button data-f="grid" class="${focus === 'grid' ? 'on' : ''}" aria-label="Grid">▦</button>`;
   for (const [id, t] of tiles) { const bg = focus !== 'grid' && id !== focus; t.el.classList.toggle('bg', bg); if (bg) t.video.muted = true; }
   grid.className = 'grid n' + (focus === 'grid' ? Math.min(live.length, 4) : 1);
 }
@@ -158,7 +158,7 @@ async function renderChannels(append) {
     if (!append && view === 'groups' && q) { // search: matching groups first
       const ql = q.toLowerCase();
       const now = Date.now() / 1000;
-      const ep = (r.epg || []).map(h => `<div class="card ch" data-id="${h.c.id}" data-name="${esc(h.c.name)}">${h.c.icon ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(h.c.icon)}" onerror="this.style.visibility='hidden'">` : '<img alt="">'}<span class="n"><span>${esc(h.p[2])}</span><span class="sub">${h.p[0] <= now ? '<b class="lv">Live now</b>' : hm(h.p[0])} � ${esc(h.c.name)}</span></span></div>`).join('');
+      const ep = (r.epg || []).map(h => `<div class="card ch" data-id="${h.c.id}" data-name="${esc(h.c.name)}">${h.c.icon ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(h.c.icon)}" onerror="this.style.visibility='hidden'">` : '<img alt="">'}<span class="n"><span>${esc(h.p[2])}</span><span class="sub">${h.p[0] <= now ? '<b class="lv">Live now</b>' : hm(h.p[0])} · ${esc(h.c.name)}</span></span></div>`).join('');
       html = visible().filter(g => g.name.toLowerCase().includes(ql)).slice(0, 20).map(g => grow(g.id, g.name, g.n)).join('') + (ep ? '<h2 class="sec">Guide</h2>' + ep + (html ? '<h2 class="sec">Channels</h2>' : '') : '') + html;
     }
     got += r.items.length; total = r.total;
@@ -209,14 +209,15 @@ $('sheet').onclick = e => { if (e.target.id === 'sheet') $('sheet').hidden = tru
 
 async function pick(id, name) {
   await tick();
-  const mine = S.channels.find(c => c.id === id);
-  if (mine && mine.status !== 'down') return show('watch');
+  const mine = sel(id);
+  if (mine && mine.status !== 'down') return watchCh(mine.id);
   if (!S.me.admin) return toast(mine ? 'Channel is down' : 'Not on · ask an admin to start it');
-  const others = S.channels.filter(c => c.id !== id);
-  if (mine || !others.length) return start(id, name);
-  const under = S.channels.length < S.max;
-  const btns = others.map(c => ({ t: 'Replace ' + c.name, cls: under ? '' : 'pri', f: () => replace(c.id, id, name) }));
-  if (under) btns.unshift({ t: 'Add', cls: 'pri', f: () => start(id, name) });
+  if (mine) { id = mine.id; name = mine.name; }
+  const others = S.channels.filter(c => c !== mine);
+  if (!others.length) return start(id, name);
+  const under = S.channels.length - (mine ? 1 : 0) < S.max;
+  const btns = others.map(c => ({ t: 'Replace ' + c.name + (c.status === 'down' ? ' (down)' : ''), cls: under ? '' : 'pri', f: () => replace(c.id, id, name) }));
+  if (under) btns.unshift({ t: mine ? 'Retry' : 'Add', cls: 'pri', f: () => start(id, name) });
   sheet(under ? `Play ${name}?` : `${name}: replace which?`, btns);
 }
 async function start(id, name) {

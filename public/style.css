@@ -37,7 +37,7 @@ h2.sec{font-size:13px;font-weight:600;opacity:.5;margin:14px 4px 2px;text-transf
 .n b{font-weight:500}.sub{font-size:12px;opacity:.7}
 .grp,.ch{cursor:pointer}.grp:active,.ch:active{background:#1d1d1f}.grp.pin{background:#16140a}
 .cnt{font-size:13px;opacity:.5}.chev{opacity:.35;font-size:22px}
-.ch img{width:36px;height:36px;object-fit:contain;flex:none}.ch.on{box-shadow:inset 3px 0 #3c3}.ch.on .n>span:first-child::after{content:' ● live';color:#3c3;font-size:12px}
+.ch img{width:36px;height:36px;object-fit:contain;flex:none}.ch.on{box-shadow:inset 3px 0 #3c3}.ch.on .n>span:first-child::after{content:' ● live';color:#3c3;font-size:12px}.ch.watching{background:#0f1f12}.ch.watching .n>span:first-child::after{content:' ▶ watching'}.ch.down .n>span:first-child::after{content:' ● down';color:#ff453a;font-size:12px}
 .star{background:none;border:0;min-width:44px;min-height:44px;padding:0;font-size:22px;color:#666}.star.on{color:#f5c518}
 /* toggles */
 .tg{cursor:pointer}.tg input{position:absolute;opacity:0;pointer-events:none}.sw{flex:none;width:50px;height:30px;border-radius:15px;background:#39393d;position:relative;transition:background .15s}
