@@ -268,6 +268,7 @@ async function handle(req, res) {
   return send(res, 404, { error: 'not found' });
 }
 
+epg.setExtra(() => [...Object.values(favs).flat(), ...ch.list().map(c => c.id)].map(provider.repOf));
 ch.init();
 epg.init();
 const server = http.createServer((req, res) => {
