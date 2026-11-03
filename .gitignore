@@ -5,3 +5,4 @@ hls/
 *.log
 .env
 config/jwt_secret
+config/local.json

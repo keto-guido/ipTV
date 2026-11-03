@@ -8,6 +8,7 @@ const provider = require('./provider');
 const SETTINGS_FILE = path.join(cfg.DATA, 'settings.json');
 const STATE_FILE = path.join(cfg.DATA, 'state.json');
 const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180 };
+const WAKE_DEBOUNCE_MS = 30e3;
 const BACKOFF_BASE = 5e3, BACKOFF_MAX = 300e3, RETRY_CAP = 6, STABLE_MS = 60e3;
 const FATAL = /\b(401|403|429|509)\b|Unauthorized|Forbidden|Too Many Requests/i;
 
@@ -108,7 +109,7 @@ function kill(c) {
 
 // Start waiting channels if capacity frees up.
 function pump() {
-  for (const c of chans.values()) if (c.status === 'idle' && c.wanted && Date.now() - c.lastAccess < 30e3) start(c);
+  for (const c of chans.values()) if (c.status === 'idle' && c.wanted && Date.now() - c.lastAccess < 30e3 && Date.now() - (c.startedAt || 0) > WAKE_DEBOUNCE_MS) start(c);
 }
 
 function view(c) {
@@ -173,7 +174,13 @@ module.exports = {
     const c = chans.get(String(id));
     if (!c) return null;
     c.lastAccess = Date.now(); c.viewers.set(who, Date.now());
-    if (wake) { c.wanted = true; if (!c.proc && c.status === 'idle') start(c); }
+    // Only channels an admin selected exist in `chans`, so a viewer can never open an upstream
+    // for anything else. An already-running upstream is never restarted or duplicated (start()
+    // bails on c.proc), and restarting an idle-stopped channel is debounced to once per 30s.
+    if (wake) {
+      c.wanted = true;
+      if (!c.proc && c.status === 'idle' && Date.now() - (c.startedAt || 0) > WAKE_DEBOUNCE_MS) start(c);
+    }
     return view(c);
   },
   setSettings(s) {

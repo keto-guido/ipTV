@@ -5,6 +5,10 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const env = process.env;
 
+function localCfg() {
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'local.json'), 'utf8')); } catch { return {}; }
+}
+
 const cfg = {
   ROOT,
   HOST: env.HOST || '0.0.0.0',
@@ -17,7 +21,8 @@ const cfg = {
   DATA: path.join(ROOT, 'data'),
   HLS: path.join(ROOT, 'hls'),
   PUBLIC: path.join(ROOT, 'public'),
-  FFMPEG: env.FFMPEG || 'ffmpeg',
+  // ffmpeg: config/local.json {"ffmpegPath"} > FFMPEG env > PATH
+  FFMPEG: localCfg().ffmpegPath || env.FFMPEG || 'ffmpeg',
   UA: env.PROVIDER_UA || 'VLC/3.0.20 LibVLC/3.0.20',
   LIST_TTL_MS: 12 * 3600e3,
   REFRESH_MIN_MS: 10 * 60e3,

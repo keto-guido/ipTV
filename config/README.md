@@ -5,6 +5,7 @@ Both files here are **gitignored** and must never be committed.
 | File | Contents | Written by |
 |---|---|---|
 | `secrets.env` | `IPTV_M3U_URL=<provider xmltv.php URL with username & password>` | you |
+| `local.json` | optional machine settings, e.g. `{"ffmpegPath": "C:\\path\\ffmpeg.exe"}` | you |
 | `jwt_secret` | 64 lowercase hex chars, no newline. HMAC key = the hex string's UTF-8 bytes. Shared with the NAS dashboard. | NAS bot |
 
 Example `secrets.env`:

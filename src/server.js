@@ -24,7 +24,7 @@ function byIds(ids) {
 const idList = q => (q || '').split(',').filter(x => /^[0-9A-Za-z_-]{1,20}$/.test(x)).slice(0, 300);
 function gz(req, res, obj) {
   const j = JSON.stringify(obj);
-  if (j.length > 20000 && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) return send(res, 200, zlib.gzipSync(j), 'application/json', { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+  if (j.length > 1400 && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) return send(res, 200, zlib.gzipSync(j), 'application/json', { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
   return send(res, 200, j);
 }
 
@@ -121,12 +121,18 @@ async function handle(req, res) {
   if (!user.admin) return isHtml ? send(res, 302, '', 'text/plain', { Location: B + '/' }) : send(res, 403, { error: 'forbidden' });
   if (m === 'GET' && p === '/admin') return send(res, 200, page('admin.html'), TYPES['.html']);
   if (m === 'GET' && p === '/api/channels') {
-    try {
-      const j = JSON.stringify(await provider.getList());
-      if (/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return send(res, 200, zlib.gzipSync(j), 'application/json', { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
-      return send(res, 200, j);
-    }
+    try { return gz(req, res, await provider.getList()); }
     catch (e) { return send(res, 502, { error: redact(e.message) }); }
+  }
+  // Server-side search/paging so phones never download the full list.
+  if (m === 'GET' && p === '/api/search') {
+    let l;
+    try { l = await provider.getList(); } catch (e) { return send(res, 502, { error: redact(e.message) }); }
+    const q = (url.searchParams.get('q') || '').trim().toLowerCase(), cat = url.searchParams.get('cat') || '';
+    const off = Math.max(0, +url.searchParams.get('offset') || 0), lim = Math.min(200, +url.searchParams.get('limit') || 100);
+    const fav = new Set(favs[user.sub] || []);
+    const hit = l.channels.filter(c => (cat === '*' ? fav.has(c.id) : !cat || c.cat === cat) && (!q || c.name.toLowerCase().includes(q)));
+    return gz(req, res, { total: hit.length, fetchedAt: l.fetchedAt, count: l.channels.length, items: hit.slice(off, off + lim).map(slim) });
   }
   if (m === 'POST' && p === '/api/refresh') {
     try { const d = await provider.refresh(); epg.reindex(); return send(res, 200, { ok: true, fetchedAt: d.fetchedAt, count: d.channels.length }); }

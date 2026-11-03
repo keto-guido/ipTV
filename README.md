@@ -26,7 +26,7 @@ Gitignored: `config/secrets.env`, `config/jwt_secret`, `data/` (cache, settings,
 | `LOGIN_PATH` | `/login` |
 | `JWT_SECRET_FILE` | `config/jwt_secret` |
 | `SECRETS_FILE` | `config/secrets.env` |
-| `FFMPEG` | `ffmpeg` |
+| `FFMPEG` | `ffmpeg` (used if `config/local.json` has no `ffmpegPath`) |
 | `DEV_AUTH` | off – see below |
 
 ## Auth
@@ -60,7 +60,7 @@ Roles: `tv` = watch, `tv-admin` = watch + admin. Unauthenticated HTML → `302 /
 |---|---|---|
 | `GET /api/status`, `POST /api/watch/:id` | ✓ | ✓ |
 | `GET/POST /api/favorites`, `GET /api/categories`, `GET /api/lineup?cat=`, `GET /api/epg/now?ids=`, `GET /api/epg/range?ids=&from=&hours=` | ✓ | ✓ |
-| `GET /api/channels`, `POST /api/refresh`, `GET /api/epg/info`, `POST /api/epg/refresh`, `GET/POST /api/settings`, `POST /api/select`, `POST /api/stop` | | ✓ |
+| `GET /api/channels`, `GET /api/search?q=&cat=&offset=&limit=` (admin list uses this, 50 per page), `POST /api/refresh`, `GET /api/epg/info`, `POST /api/epg/refresh`, `GET/POST /api/settings`, `POST /api/select`, `POST /api/stop` | | ✓ |
 
 ## Transcode
 `h264_nvenc` (p4, CBR) scaled to 720p ≈2.2 Mbps (or 480p ≈1.2 Mbps), never upscaled; AAC 128k stereo; HLS 3 s segments, 6-segment rolling list with `delete_segments`, written to `hls/<channelId>/`.
@@ -77,5 +77,14 @@ public/           viewer + admin UI, vendored hls.js
 scripts/          dev launcher, test-token minter
 ```
 
-## Known issue: NVENC on this PC
-ffmpeg 9.x requires NVIDIA driver ≥ 610 for NVENC (API 13.1). McKinley's GTX 1060 runs driver 560.94, and Pascal GPUs don't get 610+ drivers, so the app detects this at startup and uses libx264 `veryfast` (~2–5 % total CPU for one 720p channel on this machine). To use the GPU, point `FFMPEG` at an older ffmpeg build (7.x, NVENC API 12) – e.g. `set FFMPEG=C:\tools\ffmpeg7\bin\ffmpeg.exe`.
+## NVENC on this PC
+ffmpeg 9.x needs NVIDIA driver ≥ 610 for NVENC; McKinley's GTX 1060 (driver 560.94) can't get that. The app therefore uses a portable ffmpeg 7.0.2 (NVENC API 12) configured in the gitignored `config/local.json`:
+
+```json
+{ "ffmpegPath": "C:\\Users\\ericm\\AppData\\Local\\ffmpeg-7.0\\ffmpeg-7.0.2-essentials_build\\bin\\ffmpeg.exe" }
+```
+
+Resolution order: `config/local.json` `ffmpegPath` → `FFMPEG` env → `ffmpeg` on PATH. A startup self-test (local test pattern, no provider traffic) picks `h264_nvenc`, else libx264 `veryfast`.
+
+## Viewer heartbeats
+The viewer posts `/api/watch/<id>` every 5 s. This only bumps last-seen for channels an admin has selected (others → 404); a running upstream is never restarted or duplicated, and restarting an idle-stopped selected channel is debounced to at most once per 30 s.
