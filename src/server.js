@@ -19,7 +19,7 @@ function slim(c) { return { id: c.id, name: c.name, cat: c.cat, icon: c.icon }; 
 function byIds(ids) {
   const l = provider.load(); if (!l) return [];
   const m = new Map(l.channels.map(c => [c.id, c]));
-  return ids.map(i => m.get(i)).filter(Boolean).map(slim);
+  return [...new Set(ids.map(provider.repOf))].map(i => m.get(i)).filter(Boolean).map(slim);
 }
 const idList = q => (q || '').split(',').filter(x => /^[0-9A-Za-z_-]{1,20}$/.test(x)).slice(0, 300);
 function gz(req, res, obj) {
@@ -114,8 +114,8 @@ async function handle(req, res) {
   if (m === 'POST' && p === '/api/favorites') {
     const b = await body(req), id = String(b.id || '');
     if (!idList(id).length) return send(res, 400, { error: 'bad id' });
-    const f = new Set(favs[user.sub] || []);
-    if (b.on) { if (f.size < 500) f.add(id); } else f.delete(id);
+    const rid = provider.repOf(id), f = new Set((favs[user.sub] || []).map(provider.repOf));
+    if (b.on) { if (f.size < 500) f.add(rid); } else { f.delete(rid); f.delete(id); }
     favs[user.sub] = [...f]; saveFavs();
     return send(res, 200, favs[user.sub]);
   }
@@ -146,7 +146,7 @@ async function handle(req, res) {
     const l = provider.load(); if (!l) return send(res, 200, { total: 0, items: [] });
     const q = (url.searchParams.get('q') || '').trim().toLowerCase().slice(0, 100), cat = url.searchParams.get('cat') || '';
     const off = Math.max(0, +url.searchParams.get('offset') || 0), lim = Math.max(1, Math.min(100, +url.searchParams.get('limit') || 60));
-    const h = new Set(hid[user.sub] || []), fav = new Set(favs[user.sub] || []);
+    const h = new Set(hid[user.sub] || []), fav = new Set((favs[user.sub] || []).map(provider.repOf));
     const items = []; let total = 0;
     for (const c of l.channels) {
       if (cat === '*') { if (!fav.has(c.id)) continue; } // favorites stay visible even in hidden groups
@@ -180,10 +180,11 @@ async function handle(req, res) {
     try { l = await provider.getList(); } catch (e) { return send(res, 502, { error: redact(e.message) }); }
     const q = (url.searchParams.get('q') || '').trim().toLowerCase(), cat = url.searchParams.get('cat') || '';
     const off = Math.max(0, +url.searchParams.get('offset') || 0), lim = Math.min(200, +url.searchParams.get('limit') || 100);
-    const fav = new Set(favs[user.sub] || []);
+    const fav = new Set((favs[user.sub] || []).map(provider.repOf));
     const hit = l.channels.filter(c => (cat === '*' ? fav.has(c.id) : !cat || c.cat === cat) && (!q || c.name.toLowerCase().includes(q)));
     return gz(req, res, { total: hit.length, fetchedAt: l.fetchedAt, count: l.channels.length, items: hit.slice(off, off + lim).map(slim) });
   }
+  if (m === 'GET' && (mm = p.match(/^\/api\/versions\/([0-9A-Za-z_-]+)$/))) return send(res, 200, provider.alts(mm[1]));
   if (m === 'POST' && p === '/api/refresh') {
     try { const d = await provider.refresh(); epg.reindex(); return send(res, 200, { ok: true, fetchedAt: d.fetchedAt, count: d.channels.length }); }
     catch (e) { return send(res, e.retryAfter ? 429 : 502, { error: redact(e.message), retryAfter: e.retryAfter }); }
