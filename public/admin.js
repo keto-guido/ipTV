@@ -13,7 +13,7 @@ const row = (c, e) => `<div class="card" data-sel="${c.id}"><button class="star 
 async function render(append) {
   const seq = ++renderSeq;
   const qs = new URLSearchParams({ q: $('q').value.trim(), cat: $('cat').value, offset: append ? items.length : 0, limit: 50 });
-  let r; try { r = await api('/api/search?' + qs); } catch (e) { return msg(e.message); }
+  let r; try { r = await api('/api/browse?' + qs); } catch (e) { return msg(e.message); }
   if (seq !== renderSeq) return;
   const e = await nowNext(r.items.map(c => c.id)).catch(() => ({}));
   if (seq !== renderSeq) return;
@@ -21,11 +21,11 @@ async function render(append) {
   const html = r.items.map(c => row(c, e)).join('');
   if (append) { $('more')?.remove(); $('list').insertAdjacentHTML('beforeend', html); } else $('list').innerHTML = html;
   if (items.length < total) $('list').insertAdjacentHTML('beforeend', `<button id="more" style="width:100%">+${total - items.length}</button>`);
-  msg(`${r.count} · ${new Date(r.fetchedAt).toLocaleString()}`);
+  msg(`${r.total}`);
 }
 async function load() {
   try {
-    const cats = (await api('/api/categories')).sort((a, b) => a.name.localeCompare(b.name));
+    const cats = (await api('/api/groups')).groups.filter(g => !g.hidden).sort((a, b) => a.name.localeCompare(b.name));
     $('cat').innerHTML = '<option value="*">★</option><option value="">All</option>' + cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
   } catch (e) { msg(e.message); }
   if (!FAV.size) $('cat').value = '';
@@ -40,7 +40,12 @@ document.addEventListener('click', async e => {
   try {
     if (t.dataset.stop) await api('/api/stop', { id: t.dataset.stop });
     else await api('/api/select', { id: t.dataset.sel });
-  } catch (err) { msg(err.message); }
+  } catch (err) {
+    const cur = (await api('/api/status').catch(() => ({ channels: [] }))).channels.filter(c => c.id !== t.dataset.sel);
+    const nm = t.querySelector('.n span')?.textContent || t.dataset.sel;
+    if (err.message === 'cap reached' && cur.length && confirm(`Replace ${cur[0].name} with ${nm}?`)) { try { await api('/api/replace', { old: cur[0].id, id: t.dataset.sel }); } catch (e2) { msg(e2.message); } }
+    else msg(err.message);
+  }
   status();
 });
 $('q').oninput = () => { clearTimeout(qt); qt = setTimeout(() => render(), 250); }; $('cat').onchange = () => render();

@@ -28,9 +28,24 @@ function gz(req, res, obj) {
   return send(res, 200, j);
 }
 
+// Per-user hidden groups (category ids) keyed by JWT sub.
+const HID_FILE = path.join(cfg.DATA, 'hidden.json');
+let hid = {};
+try { hid = JSON.parse(fs.readFileSync(HID_FILE, 'utf8')); } catch {}
+function saveHid() { fs.mkdirSync(cfg.DATA, { recursive: true }); fs.writeFileSync(HID_FILE, JSON.stringify(hid)); }
+let gcache = null; // group counts, rebuilt when the cached list changes
+function groupList() {
+  const l = provider.load(); if (!l) return [];
+  if (gcache && gcache.l === l) return gcache.g;
+  const n = new Map();
+  for (const c of l.channels) n.set(c.cat, (n.get(c.cat) || 0) + 1);
+  const g = l.categories.filter(c => n.get(c.id)).map(c => ({ id: c.id, name: c.name, n: n.get(c.id) }));
+  gcache = { l, g }; return g;
+}
+
 const B = cfg.BASE;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
-  '.m3u8': 'application/vnd.apple.mpegurl', '.ts': 'video/mp2t', '.json': 'application/json' };
+  '.m3u8': 'application/vnd.apple.mpegurl', '.ts': 'video/mp2t', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
 
 function send(res, code, body, type = 'application/json', extra = {}) {
   const b = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -89,7 +104,7 @@ async function handle(req, res) {
     return file(res, path.join(ch.dir(mm[1]), mm[2]), mm[2].endsWith('.ts') ? 'private, max-age=60' : 'no-store');
   }
   if (m === 'GET' && p === '/api/status')
-    return send(res, 200, { me: { name: user.name, admin: user.admin }, channels: ch.list() });
+    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, channels: ch.list() });
   if (m === 'GET' && p === '/guide') return send(res, 200, page('guide.html'), TYPES['.html']);
   // ---- guide & favorites: served from local cache only ----
   if (m === 'GET' && p === '/api/favorites') return send(res, 200, byIds(favs[user.sub] || []));
@@ -111,6 +126,33 @@ async function handle(req, res) {
   if (m === 'GET' && p === '/api/epg/range') {
     const from = +url.searchParams.get('from') || Math.floor(Date.now() / 1000), hrs = Math.min(+url.searchParams.get('hours') || 4, 12);
     return gz(req, res, epg.range(idList(url.searchParams.get('ids')), from, from + hrs * 3600));
+  }
+  // ---- groups (TiviMate-style browsing), cache only ----
+  if (m === 'GET' && p === '/api/groups') {
+    const h = new Set(hid[user.sub] || []);
+    return gz(req, res, { fav: (favs[user.sub] || []).length, groups: groupList().map(g => ({ ...g, hidden: h.has(g.id) || undefined })) });
+  }
+  if (m === 'POST' && p === '/api/groups/hidden') {
+    const b = await body(req);
+    const ids = Array.isArray(b.ids) ? b.ids.map(String).filter(x => /^[0-9A-Za-z_-]{1,20}$/.test(x)).slice(0, 5000) : null;
+    if (!ids) return send(res, 400, { error: 'bad ids' });
+    hid[user.sub] = [...new Set(ids)]; saveHid();
+    return send(res, 200, { hidden: hid[user.sub].length });
+  }
+  if (m === 'GET' && p === '/api/browse') {
+    const l = provider.load(); if (!l) return send(res, 200, { total: 0, items: [] });
+    const q = (url.searchParams.get('q') || '').trim().toLowerCase().slice(0, 100), cat = url.searchParams.get('cat') || '';
+    const off = Math.max(0, +url.searchParams.get('offset') || 0), lim = Math.max(1, Math.min(100, +url.searchParams.get('limit') || 60));
+    const h = new Set(hid[user.sub] || []), fav = new Set(favs[user.sub] || []);
+    const items = []; let total = 0;
+    for (const c of l.channels) {
+      if (cat === '*') { if (!fav.has(c.id)) continue; } // favorites stay visible even in hidden groups
+      else if (h.has(c.cat) || (cat && c.cat !== cat)) continue;
+      if (q && !c.name.toLowerCase().includes(q)) continue;
+      if (total >= off && items.length < lim) items.push(slim(c));
+      total++;
+    }
+    return gz(req, res, { total, items });
   }
   if (m === 'POST' && (mm = p.match(/^\/api\/watch\/([0-9A-Za-z_-]+)$/))) {
     const v = ch.touch(mm[1], user.sub, true);
@@ -147,6 +189,12 @@ async function handle(req, res) {
   if (m === 'POST' && p === '/api/settings') return send(res, 200, ch.setSettings(await body(req)));
   if (m === 'POST' && p === '/api/select') {
     const r = ch.select((await body(req)).id);
+    return send(res, r.error ? 409 : 200, r);
+  }
+  // Replace: stop the old upstream first (awaits ffmpeg exit), then start the new one, so the cap is never exceeded.
+  if (m === 'POST' && p === '/api/replace') {
+    const b = await body(req);
+    const r = await ch.replace(String(b.old || ''), String(b.id || ''));
     return send(res, r.error ? 409 : 200, r);
   }
   if (m === 'POST' && p === '/api/stop') { await ch.stop((await body(req)).id); return send(res, 200, { ok: true }); }

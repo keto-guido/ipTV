@@ -162,6 +162,12 @@ module.exports = {
     start(c);
     return { ok: true, channel: view(c) };
   },
+  async replace(oldId, id) {
+    if (!/^[0-9A-Za-z_-]{1,20}$/.test(id)) return { error: 'bad id' };
+    if (!provider.channel(id)) return { error: 'unknown channel' };
+    if (oldId && oldId !== id && chans.has(oldId)) await module.exports.stop(oldId);
+    return module.exports.select(id);
+  },
   async stop(id) {
     const c = chans.get(String(id));
     if (!c) return;

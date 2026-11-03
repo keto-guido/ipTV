@@ -39,7 +39,7 @@ $('cat').onchange = show;
 $('prev').onclick = () => { from = Math.max(from - 7200, Math.floor(Date.now() / 1000) - 7200); show(); };
 $('next').onclick = () => { from = Math.min(from + 7200, Math.floor(Date.now() / 1000) + 20 * 3600); show(); };
 (async () => {
-  const cats = (await api('/api/categories')).sort((a, b) => a.name.localeCompare(b.name));
+  const cats = (await api('/api/groups')).groups.filter(g => !g.hidden).sort((a, b) => a.name.localeCompare(b.name));
   $('cat').insertAdjacentHTML('beforeend', cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join(''));
   await loadFavs();
   if (!FAV.size && cats.length) $('cat').value = cats[0].id;
