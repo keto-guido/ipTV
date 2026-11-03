@@ -124,18 +124,36 @@ function watchCh(id) {
 // ---------- navigation ----------
 function show(v, opt = {}) {
   view = v;
-  $('v-watch').hidden = v !== 'watch'; $('v-list').hidden = v !== 'groups' && v !== 'group'; $('v-manage').hidden = v !== 'manage';
+  $('v-watch').hidden = v !== 'watch'; $('v-list').hidden = v !== 'groups' && v !== 'group'; $('v-manage').hidden = v !== 'manage'; $('v-guide').hidden = v !== 'guide';
+  document.body.classList.toggle('mini', v !== 'watch'); for (const t of tiles.values()) t.video.controls = v === 'watch';
   for (const b of document.querySelectorAll('.tabs [data-go]')) b.classList.toggle('on', b.dataset.go === (v === 'group' ? (cur && cur.cat === '*' ? 'favs' : 'groups') : v === 'manage' ? 'groups' : v));
   $('back').hidden = !(v === 'group' && cur.cat !== '*') && v !== 'manage';
   $('tool').hidden = v !== 'groups'; $('tool').textContent = 'Edit';
-  $('title').textContent = v === 'watch' ? 'TV' : v === 'groups' ? 'Groups' : v === 'manage' ? 'Show groups' : cur.name;
+  $('title').textContent = v === 'watch' ? 'TV' : v === 'groups' ? 'Groups' : v === 'manage' ? 'Show groups' : v === 'guide' ? 'Guide' : cur.name;
   if (!opt.keepQ && (v === 'groups' || v === 'group')) $('q').value = '';
   if (v === 'groups') renderGroups();
   if (v === 'group') renderChannels(false);
   if (v === 'manage') renderManage();
+  if (v === 'guide') Guide.open();
+  route(v, opt.pop);
   if (v === 'watch') tick().then(() => renderNow(true));
   scrollTo(0, 0);
 }
+// Hash routing: refresh and iOS back/forward land on the same tab; the player is never reloaded.
+function route(v, pop) {
+  const h = '#' + (v === 'group' ? (cur.cat === '*' ? 'favs' : 'g:' + encodeURIComponent(cur.cat)) : v);
+  if (location.hash !== h) history[pop ? 'replaceState' : 'pushState'](null, '', h);
+}
+function fromHash(pop) {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h.startsWith('g:')) { const x = G.groups.find(y => y.id === h.slice(2)); cur = { cat: h.slice(2), name: x ? x.name : '' }; show('group', { pop }); return true; }
+  if (h === 'favs') { cur = { cat: '*', name: 'Favorites' }; show('group', { pop }); return true; }
+  if (/^(watch|groups|guide|manage)$/.test(h)) { show(h, { pop }); return true; }
+  return false;
+}
+window.addEventListener('popstate', () => { if (!fromHash(true)) show('watch', { pop: true }); });
+// Mini player: tap to expand back to Watch.
+grid.addEventListener('click', e => { if (document.body.classList.contains('mini')) { e.preventDefault(); e.stopPropagation(); show('watch'); } }, true);
 function go(v) {
   if (v === 'favs') { cur = { cat: '*', name: 'Favorites' }; return show('group'); }
   show(v);
@@ -270,7 +288,7 @@ let mt; $('mq').oninput = () => { clearTimeout(mt); mt = setTimeout(renderManage
 
 // ---------- boot ----------
 loadFavs().catch(() => {});
-tick().then(() => { const h = location.hash.slice(1); if (/^(watch|groups|favs)$/.test(h)) { history.replaceState(null, '', location.pathname); go(h); } else show(tiles.size ? 'watch' : 'groups'); });
+tick().then(async () => { await loadGroups().catch(() => {}); if (!fromHash(true)) show(tiles.size ? 'watch' : 'groups', { pop: true }); });
 setInterval(tick, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { resume(); tick(); } });
 window.addEventListener('pageshow', e => { if (e.persisted) { resume(); tick(); } });
