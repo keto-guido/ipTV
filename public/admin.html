@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000"><title>TV · admin</title><link rel="stylesheet" href="__BASE__/static/style.css"></head><body>
+<div class="wrap">
+<div class="row"><a href="__BASE__/">▶ Watch</a><span style="flex:1"></span><span id="enc" class="dim"></span></div>
+<div id="active"></div>
+<div class="row">
+ <label>Max <select id="maxStreams"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+ <label>Res <select id="resolution"><option value="720">720p</option><option value="480">480p</option></select></label>
+ <label>Idle <select id="idleSec"><option value="60">1m</option><option value="180">3m</option><option value="300">5m</option><option value="900">15m</option></select></label>
+</div>
+<div class="row"><input id="q" placeholder="Search" autocomplete="off"><select id="cat"><option value="">All</option></select>
+<button id="refresh" title="Refresh list">↻</button></div>
+<div id="info" class="dim"></div>
+<div id="list" class="list"></div>
+</div>
+<script>window.BASE="__BASE__"</script><script src="__BASE__/static/admin.js"></script></body></html>

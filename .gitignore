@@ -1,0 +1,7 @@
+﻿node_modules/
+config/secrets.env
+data/
+hls/
+*.log
+.env
+config/jwt_secret
