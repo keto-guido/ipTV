@@ -77,3 +77,15 @@ a.dash,.row>a.dash{display:inline-flex;align-items:center;min-height:44px;min-wi
 a.dash span{display:inline-flex;align-items:center;height:32px;padding:0 12px;border:1px solid #3f3f3f;border-radius:999px;font-weight:600;white-space:nowrap;background:transparent}
 a.dash:active span,a.dash:hover span{background:#272727;border-color:#5a5a5a}
 .top a.dash{margin-right:2px}
+/* player controls: big custom sound toggle, centered unmute pill, spinner */
+#tapsnd{display:none!important}
+.tile .ib.big{min-width:48px;min-height:48px;width:48px;height:48px;border-radius:50%;background:#000b;color:#fff;font-size:22px;padding:0;opacity:1;text-shadow:none;border:1px solid #ffffff30}
+.tile .tb{right:8px;top:8px;gap:8px}
+.tile .snd{position:absolute;left:8px;bottom:8px;z-index:2}
+.snd i{display:flex;font-style:normal}.snd .off{display:none}.tile.muted .snd .on{display:none}.tile.muted .snd .off{display:flex}.tile.muted .snd{background:#fff;color:#000}
+.unmute{display:none;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2;background:#fff;color:#000;border:0;border-radius:999px;padding:12px 22px;font-size:17px;font-weight:700;box-shadow:0 6px 24px #000c;animation:tvpulse 1.2s ease 1;min-height:48px;white-space:nowrap}
+.tile.muted .unmute{display:block}.tile.wait .unmute,.tile.bg .unmute{display:none}
+@keyframes tvpulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.12)}}
+.spin{display:none;position:absolute;left:50%;top:50%;width:42px;height:42px;margin:-21px 0 0 -21px;border:4px solid #fff3;border-top-color:#fff;border-radius:50%;animation:tvrot .9s linear infinite;pointer-events:none}
+.tile.wait .spin{display:block}@keyframes tvrot{to{transform:rotate(360deg)}}
+body.mini #grid .unmute{display:none}body.mini #grid .snd{width:40px;height:40px;min-width:40px;min-height:40px;left:4px;bottom:4px}body.mini #grid .snd svg{width:22px;height:22px}

@@ -61,6 +61,37 @@ async function pip(t) {
   } catch {}
 }
 const canPip = document.pictureInPictureEnabled || 'webkitSetPresentationMode' in HTMLVideoElement.prototype;
+// One persistent main <video>: reused across channel changes so iOS keeps its unmuted user activation.
+const ICON_ON = '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>';
+const ICON_OFF = '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3z"/><path d="M16 9l6 6M22 9l-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
+function makeTile() {
+  const el = document.createElement('div'); el.className = 'tile';
+  el.innerHTML = `<video playsinline webkit-playsinline autoplay x-webkit-airplay="allow"></video><div class="spin"></div><div class="tag"><b></b><span></span></div><button class="unmute" data-unmute>Tap for sound \u{1F50A}</button><button class="ib big snd" data-snd aria-label="Sound"><i class="on">${ICON_ON}</i><i class="off">${ICON_OFF}</i></button><div class="tb">${canPip ? '<button class="ib big" data-pip aria-label="Picture in picture">\u29c9</button>' : ''}<button class="ib big" data-fs aria-label="Fullscreen">\u26f6</button></div>`;
+  grid.appendChild(el);
+  const v = el.querySelector('video');
+  v.muted = pref.muted;
+  const sync = () => el.classList.toggle('muted', v.muted);
+  v.addEventListener('volumechange', () => { sync(); if (!ours && !el.classList.contains('bg')) { pref.set(v.muted); if (!v.muted) soundGate(false); } });
+  sync();
+  el.addEventListener('click', e => {
+    const t = el._t; if (!t) return;
+    const snd = e.target.closest('[data-snd]');
+    if (document.body.classList.contains('mini') && !snd) return; // grid handler expands the mini player
+    if (e.target.closest('[data-fs]')) return fullscreen(t);
+    if (e.target.closest('[data-pip]')) return pip(t);
+    if (snd) { const m = !v.muted; setMuted(v, m); pref.set(m); sync(); if (!m) { soundGate(false); v.play().catch(() => {}); } return; }
+    if (v.muted) { setMuted(v, false); pref.set(false); sync(); soundGate(false); v.play().catch(() => {}); }
+  });
+  return el;
+}
+let spare = makeTile(); spare.hidden = true;
+const mainVideo = spare.querySelector('video');
+// Called synchronously inside a tap, before any await: keeps/primes unmuted playback on the main element.
+function prime() {
+  if (pref.muted) return;
+  const t = front(), v = t ? t.video : mainVideo;
+  setMuted(v, false); const p = v.play(); if (p) p.catch(() => {});
+}
 
 async function tick() {
   if (document.hidden) return;
@@ -68,22 +99,17 @@ async function tick() {
   $('cog').hidden = !S.me.admin;
   const live = S.channels.filter(c => c.status !== 'down');
   const gone = [], added = [];
-  for (const [id, t] of tiles) if (!live.find(c => c.id === id)) { detach(t); t.el.remove(); tiles.delete(id); gone.push(t.name); }
+  for (const [id, t] of tiles) if (!live.find(c => c.id === id)) { detach(t); if (t.video === mainVideo) { spare = t.el; spare._t = null; if (!live.length) spare.hidden = true; } else t.el.remove(); tiles.delete(id); gone.push(t.name); }
   for (const c of live) {
     let t = tiles.get(c.id);
     if (!t) {
-      const el = document.createElement('div'); el.className = 'tile';
-      el.innerHTML = `<video playsinline webkit-playsinline autoplay controls x-webkit-airplay="allow"></video><div class="tag"><b></b><span></span></div><div class="tb">${canPip ? '<button class="ib" data-pip aria-label="Picture in picture">⧉</button>' : ''}<button class="ib" data-fs aria-label="Fullscreen">⛶</button></div>`;
-      grid.appendChild(el);
-      t = { el, video: el.querySelector('video'), name: c.name }; tiles.set(c.id, t);
-      t.video.muted = true;
-      t.video.addEventListener('volumechange', () => { if (!ours && !t.el.classList.contains('bg')) { pref.set(t.video.muted); if (!t.video.muted) soundGate(false); } });
-      el.querySelector('[data-fs]').onclick = () => fullscreen(t);
-      const pb = el.querySelector('[data-pip]'); if (pb) pb.onclick = () => pip(t);
+      const el = spare || makeTile(); spare = null; el.hidden = false;
+      t = { el, video: el.querySelector('video'), name: c.name }; tiles.set(c.id, t); el._t = t;
       added.push(c.name);
     }
     const v = view === 'watch' ? await api('/api/watch/' + c.id, {}).catch(() => c) : c;
     t.el.querySelector('.tag b').textContent = c.name;
+    t.el.classList.toggle('wait', !v.ready);
     t.el.querySelector('.tag span').textContent = v.ready ? (v.viewers > 1 ? ' · ' + v.viewers : '') : (v.status === 'backoff' ? ` · retry ${v.retryIn}s` : ' · starting…');
     if (v.ready && !t.loaded) attach(t, c.id);
     if (!v.ready && t.loaded && v.status !== 'running') detach(t);
@@ -125,7 +151,7 @@ function watchCh(id) {
 function show(v, opt = {}) {
   view = v;
   $('v-watch').hidden = v !== 'watch'; $('v-list').hidden = v !== 'groups' && v !== 'group'; $('v-manage').hidden = v !== 'manage'; $('v-guide').hidden = v !== 'guide';
-  document.body.classList.toggle('mini', v !== 'watch'); for (const t of tiles.values()) t.video.controls = v === 'watch';
+  document.body.classList.toggle('mini', v !== 'watch'); for (const t of tiles.values()) t.video.controls = false;
   for (const b of document.querySelectorAll('.tabs [data-go]')) b.classList.toggle('on', b.dataset.go === (v === 'group' ? (cur && cur.cat === '*' ? 'favs' : 'groups') : v === 'manage' ? 'groups' : v));
   $('back').hidden = !(v === 'group' && cur.cat !== '*') && v !== 'manage';
   $('tool').hidden = v !== 'groups'; $('tool').textContent = 'Edit';
@@ -153,7 +179,7 @@ function fromHash(pop) {
 }
 window.addEventListener('popstate', () => { if (!fromHash(true)) show('watch', { pop: true }); });
 // Mini player: tap to expand back to Watch.
-grid.addEventListener('click', e => { if (document.body.classList.contains('mini')) { e.preventDefault(); e.stopPropagation(); show('watch'); } }, true);
+grid.addEventListener('click', e => { if (document.body.classList.contains('mini') && !e.target.closest('[data-snd]')) { e.preventDefault(); e.stopPropagation(); show('watch'); } }, true);
 function go(v) {
   if (v === 'favs') { cur = { cat: '*', name: 'Favorites' }; return show('group'); }
   show(v);
@@ -249,6 +275,7 @@ $('scancel').onclick = () => { $('sheet').hidden = true; };
 $('sheet').onclick = e => { if (e.target.id === 'sheet') $('sheet').hidden = true; };
 
 async function pick(id, name) {
+  prime();
   await tick();
   const mine = sel(id);
   if (mine && mine.status !== 'down') return watchCh(mine.id);
@@ -262,10 +289,12 @@ async function pick(id, name) {
   sheet(under ? `Play ${name}?` : `${name}: replace which?`, btns);
 }
 async function start(id, name) {
+  prime();
   try { await api('/api/select', { id }); focus = id; toast('Starting ' + name); show('watch'); }
   catch (e) { toast(e.message === 'cap reached' ? 'Limit reached' : e.message); }
 }
 async function replace(old, id, name) {
+  prime();
   toast('Switching…');
   try { await api('/api/replace', { old, id }); focus = id; toast('Starting ' + name); show('watch'); }
   catch (e) { toast(e.message === 'cap reached' ? 'Limit reached' : e.message); }
