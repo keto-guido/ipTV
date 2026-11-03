@@ -7,6 +7,26 @@ const { cfg, log, redact } = require('./config');
 const { userFor } = require('./auth');
 const provider = require('./provider');
 const ch = require('./channels');
+const epg = require('./epg');
+
+// Per-user favorites keyed by JWT sub.
+const FAV_FILE = path.join(cfg.DATA, 'favorites.json');
+let favs = {};
+try { favs = JSON.parse(fs.readFileSync(FAV_FILE, 'utf8')); } catch {}
+function saveFavs() { fs.mkdirSync(cfg.DATA, { recursive: true }); fs.writeFileSync(FAV_FILE, JSON.stringify(favs)); }
+// Cache-only channel lookups (never touch the provider).
+function slim(c) { return { id: c.id, name: c.name, cat: c.cat, icon: c.icon }; }
+function byIds(ids) {
+  const l = provider.load(); if (!l) return [];
+  const m = new Map(l.channels.map(c => [c.id, c]));
+  return ids.map(i => m.get(i)).filter(Boolean).map(slim);
+}
+const idList = q => (q || '').split(',').filter(x => /^[0-9A-Za-z_-]{1,20}$/.test(x)).slice(0, 300);
+function gz(req, res, obj) {
+  const j = JSON.stringify(obj);
+  if (j.length > 20000 && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) return send(res, 200, zlib.gzipSync(j), 'application/json', { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+  return send(res, 200, j);
+}
 
 const B = cfg.BASE;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
@@ -43,7 +63,7 @@ async function handle(req, res) {
   if (!p.startsWith(B + '/')) return send(res, 404, { error: 'not found' });
   p = p.slice(B.length);
 
-  const isHtml = p === '/' || p === '/admin';
+  const isHtml = p === '/' || p === '/admin' || p === '/guide';
   const user = userFor(req);
   if (!user || !user.watch) {
     if (isHtml && !user) return send(res, 302, '', 'text/plain', { Location: `${cfg.LOGIN_PATH}?next=${encodeURIComponent(req.url)}` });
@@ -70,6 +90,28 @@ async function handle(req, res) {
   }
   if (m === 'GET' && p === '/api/status')
     return send(res, 200, { me: { name: user.name, admin: user.admin }, channels: ch.list() });
+  if (m === 'GET' && p === '/guide') return send(res, 200, page('guide.html'), TYPES['.html']);
+  // ---- guide & favorites: served from local cache only ----
+  if (m === 'GET' && p === '/api/favorites') return send(res, 200, byIds(favs[user.sub] || []));
+  if (m === 'POST' && p === '/api/favorites') {
+    const b = await body(req), id = String(b.id || '');
+    if (!idList(id).length) return send(res, 400, { error: 'bad id' });
+    const f = new Set(favs[user.sub] || []);
+    if (b.on) { if (f.size < 500) f.add(id); } else f.delete(id);
+    favs[user.sub] = [...f]; saveFavs();
+    return send(res, 200, favs[user.sub]);
+  }
+  if (m === 'GET' && p === '/api/categories') { const l = provider.load(); return send(res, 200, l ? l.categories : []); }
+  if (m === 'GET' && p === '/api/lineup') {
+    const l = provider.load(); if (!l) return send(res, 200, []);
+    const cat = url.searchParams.get('cat') || '';
+    return gz(req, res, l.channels.filter(c => c.cat === cat).map(slim));
+  }
+  if (m === 'GET' && p === '/api/epg/now') return gz(req, res, epg.nowNext(idList(url.searchParams.get('ids'))));
+  if (m === 'GET' && p === '/api/epg/range') {
+    const from = +url.searchParams.get('from') || Math.floor(Date.now() / 1000), hrs = Math.min(+url.searchParams.get('hours') || 4, 12);
+    return gz(req, res, epg.range(idList(url.searchParams.get('ids')), from, from + hrs * 3600));
+  }
   if (m === 'POST' && (mm = p.match(/^\/api\/watch\/([0-9A-Za-z_-]+)$/))) {
     const v = ch.touch(mm[1], user.sub, true);
     return v ? send(res, 200, v) : send(res, 404, { error: 'not active' });
@@ -87,7 +129,12 @@ async function handle(req, res) {
     catch (e) { return send(res, 502, { error: redact(e.message) }); }
   }
   if (m === 'POST' && p === '/api/refresh') {
-    try { const d = await provider.refresh(); return send(res, 200, { ok: true, fetchedAt: d.fetchedAt, count: d.channels.length }); }
+    try { const d = await provider.refresh(); epg.reindex(); return send(res, 200, { ok: true, fetchedAt: d.fetchedAt, count: d.channels.length }); }
+    catch (e) { return send(res, e.retryAfter ? 429 : 502, { error: redact(e.message), retryAfter: e.retryAfter }); }
+  }
+  if (m === 'GET' && p === '/api/epg/info') return send(res, 200, epg.info());
+  if (m === 'POST' && p === '/api/epg/refresh') {
+    try { return send(res, 200, await epg.refresh()); }
     catch (e) { return send(res, e.retryAfter ? 429 : 502, { error: redact(e.message), retryAfter: e.retryAfter }); }
   }
   if (m === 'GET' && p === '/api/settings') return send(res, 200, { ...ch.settings, encoder: ch.encoder });
@@ -101,6 +148,7 @@ async function handle(req, res) {
 }
 
 ch.init();
+epg.init();
 const server = http.createServer((req, res) => {
   handle(req, res).catch(e => { log('error', e.stack || e.message); if (!res.headersSent) send(res, 500, { error: 'error' }); });
 });

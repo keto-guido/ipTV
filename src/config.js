@@ -39,7 +39,7 @@ function getProvider() {
     const username = u.searchParams.get('username');
     const password = u.searchParams.get('password');
     if (!username || !password) return null;
-    provider = { origin: u.origin, host: u.host, username, password };
+    provider = { origin: u.origin, host: u.host, username, password, epgUrl: u.href };
   } catch { return null; }
   return provider;
 }

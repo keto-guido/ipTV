@@ -1,15 +1,10 @@
 'use strict';
-const B = window.BASE, grid = document.getElementById('grid'), empty = document.getElementById('empty');
+const grid = document.getElementById('grid'), empty = document.getElementById('empty');
 const tiles = new Map(); // id -> {el, video, hls, loaded}
 const isSafari = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
 const native = !!document.createElement('video').canPlayType('application/vnd.apple.mpegurl') && (isSafari || !(window.Hls && Hls.isSupported()));
 
-async function api(p, opt) {
-  const r = await fetch(B + p, Object.assign({ credentials: 'same-origin' }, opt));
-  if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname); throw 0; }
-  return r.json();
-}
-const post = p => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+const post = p => api(p, {});
 
 function attach(t, id) {
   const src = `${B}/hls/${id}/index.m3u8`;
@@ -50,3 +45,20 @@ async function tick() {
 }
 tick(); setInterval(tick, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+
+// Favorites drawer with now/next. Browsing never starts a stream; admins can serve with ▶.
+let admin = false;
+async function drawer() {
+  const d = $('drawer');
+  if (!d.classList.toggle('open')) return;
+  const f = await loadFavs().catch(() => []);
+  const e = await nowNext(f.map(c => c.id)).catch(() => ({}));
+  $('favs').innerHTML = f.map(c => `<div class="card"><button class="star on" data-star="${c.id}">★</button><span class="n"><span>${esc(c.name)}</span><span class="sub">${nn(e[c.id])}</span></span>${admin ? `<button data-play="${c.id}">▶</button>` : ''}</div>`).join('') || '<div class="dim">☆</div>';
+}
+$('fab').onclick = drawer;
+$('favs').onclick = async ev => {
+  const t = ev.target.closest('[data-star],[data-play]'); if (!t) return;
+  if (t.dataset.star) { const on = await star(t.dataset.star); t.classList.toggle('on', on); t.textContent = on ? '★' : '☆'; }
+  else { await api('/api/select', { id: t.dataset.play }).catch(e => alert(e.message)); $('drawer').classList.remove('open'); tick(); }
+};
+api('/api/status').then(s => { admin = s.me.admin; }).catch(() => {});

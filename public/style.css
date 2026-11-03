@@ -15,3 +15,17 @@ button{cursor:pointer}button:active{background:#333}
 .st{font-size:12px;padding:2px 8px;border-radius:10px;background:#333}.st.running{background:#1e5631}.st.starting{background:#5a4a12}.st.backoff{background:#6b3d0e}.st.down{background:#6b1414}
 .list .card{cursor:pointer}.list .card:hover{background:#1a1a1a}.list img{width:28px;height:28px;object-fit:contain}
 label{font-size:13px;opacity:.8}
+.n b{font-weight:500}.sub{font-size:12px;opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.n{display:flex;flex-direction:column;min-width:0}.n>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.star{background:none;border:0;padding:4px;font-size:18px;color:#666}.star.on{color:#f5c518}
+.drawer{position:fixed;left:0;right:0;bottom:0;max-height:70vh;overflow:auto;background:#0b0b0bf2;padding:10px 12px calc(10px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .2s;z-index:3}
+.drawer.open{transform:none}.fab{position:fixed;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));opacity:.5;font-size:20px;z-index:4;background:#1c1c1e;border-radius:20px;width:40px;height:40px;padding:0}
+.tabs{display:flex;gap:6px}.tabs button.on{background:#333}
+/* guide */
+.g{position:relative;overflow:auto;height:calc(100dvh - 60px);-webkit-overflow-scrolling:touch}
+.g .hdr,.g .gr{display:flex}.g .hdr{position:sticky;top:0;z-index:2;background:#000;height:24px}
+.g .cn{position:sticky;left:0;z-index:1;flex:0 0 110px;width:110px;background:#0b0b0b;font-size:12px;padding:4px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-bottom:1px solid #1a1a1a}
+.g .hdr .cn{z-index:3}.g .tl{position:relative;flex:none;height:44px;border-bottom:1px solid #1a1a1a}
+.g .hdr .tl{height:24px}.g .tk{position:absolute;top:4px;font-size:11px;opacity:.6}
+.g .pg{position:absolute;top:2px;bottom:2px;background:#161616;border-radius:4px;padding:3px 5px;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-left:2px solid #000}
+.g .pg.live{background:#1d2a3a}.g .now{position:absolute;top:0;bottom:0;width:1px;background:#e33;z-index:1}
