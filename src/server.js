@@ -44,6 +44,7 @@ function groupList() {
 }
 
 const B = cfg.BASE;
+const VER = Date.now().toString(36); // asset version, changes every restart
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
   '.m3u8': 'application/vnd.apple.mpegurl', '.ts': 'video/mp2t', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
 
@@ -68,7 +69,7 @@ function body(req) {
   });
 }
 function page(name) {
-  return fs.readFileSync(path.join(cfg.PUBLIC, name), 'utf8').replace(/__BASE__/g, B);
+  return fs.readFileSync(path.join(cfg.PUBLIC, name), 'utf8').replace(/__BASE__/g, B).replace(/(\/static\/[\w./-]+\.(?:js|css|webmanifest))"/g, `$1?v=${VER}"`);
 }
 
 async function handle(req, res) {
@@ -95,7 +96,7 @@ async function handle(req, res) {
   if (m === 'GET' && p.startsWith('/static/')) {
     const f = path.normalize(path.join(cfg.PUBLIC, p.slice(8)));
     if (!f.startsWith(cfg.PUBLIC + path.sep)) return send(res, 404, { error: 'not found' });
-    return file(res, f, 'private, max-age=3600');
+    return file(res, f, p.startsWith('/static/vendor/') ? 'private, max-age=86400' : 'no-cache');
   }
   let mm;
   if (m === 'GET' && (mm = p.match(/^\/hls\/([0-9A-Za-z_-]+)\/(index\.m3u8|seg_\d+\.ts)$/))) {

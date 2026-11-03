@@ -69,6 +69,7 @@ async function tick() {
   else if (gone.length && !live.length) toast(gone.join(', ') + ' stopped');
   grid.className = 'grid n' + Math.min(live.length, 4);
   empty.hidden = live.length > 0;
+  if (view === 'watch') renderNow();
   for (const el of list.querySelectorAll('.ch')) el.classList.toggle('on', !!S.channels.find(c => c.id === el.dataset.id && c.status !== 'down'));
 }
 
@@ -84,7 +85,7 @@ function show(v, opt = {}) {
   if (v === 'groups') renderGroups();
   if (v === 'group') renderChannels(false);
   if (v === 'manage') renderManage();
-  if (v === 'watch') tick();
+  if (v === 'watch') tick().then(() => renderNow(true));
   scrollTo(0, 0);
 }
 function go(v) {
@@ -141,7 +142,7 @@ async function renderChannels(append) {
 const obs = new IntersectionObserver(es => { if (es.some(x => x.isIntersecting)) renderChannels(true); }, { rootMargin: '600px' });
 let qt; $('q').oninput = () => { clearTimeout(qt); qt = setTimeout(() => (view === 'groups' ? renderGroups() : renderChannels(false)), 250); };
 
-list.onclick = async e => {
+const onRows = async e => {
   const st = e.target.closest('[data-star]');
   if (st) { const on = await star(st.dataset.star).catch(() => null); if (on != null) { st.classList.toggle('on', on); st.textContent = on ? '★' : '☆'; } return; }
   if (e.target.closest('[data-manage]')) return show('manage');
@@ -149,14 +150,32 @@ list.onclick = async e => {
   if (g) { cur = { cat: g.dataset.cat, name: g.dataset.cat === '*' ? 'Favorites' : g.dataset.name }; return show('group'); }
   const c = e.target.closest('.ch'); if (c) pick(c.dataset.id, c.dataset.name);
 };
+list.onclick = onRows; $('nowlist').onclick = onRows;
+
+// Watch view: on-now rows with now/next + favorites as a quick-switch list.
+let nowKey = '', nowAt = 0;
+async function renderNow(force) {
+  const live = S.channels.filter(c => c.status !== 'down');
+  const key = live.map(c => c.id).join() + '|' + FAV.size;
+  if (!force && key === nowKey && Date.now() - nowAt < 60e3) return;
+  nowKey = key; nowAt = Date.now();
+  const favs = await loadFavs().catch(() => []);
+  const ids = [...new Set([...live.map(c => c.id), ...favs.map(c => c.id)])].slice(0, 300);
+  const e = await nowNext(ids).catch(() => ({}));
+  const a = live.map(c => crow({ id: c.id, name: c.name }, e)).join('');
+  const b = favs.filter(f => !live.find(c => c.id === f.id)).slice(0, 60).map(c => crow(c, e)).join('');
+  $('nowlist').innerHTML = (a ? '<h2>On now</h2>' + a : '') + (b ? '<h2>Favorites</h2>' + b : '');
+}
 
 // ---------- tap to watch / replace ----------
 function sheet(msg, btns) {
+  if (!msg || !btns || !btns.length) return;
   $('smsg').textContent = msg;
   $('sbtn').innerHTML = btns.map((b, i) => `<button data-i="${i}" class="${b.cls || ''}">${esc(b.t)}</button>`).join('');
   $('sheet').hidden = false;
   $('sbtn').onclick = e => { const b = e.target.closest('[data-i]'); if (!b) return; $('sheet').hidden = true; btns[b.dataset.i].f(); };
 }
+$('sheet').hidden = true;
 $('scancel').onclick = () => { $('sheet').hidden = true; };
 $('sheet').onclick = e => { if (e.target.id === 'sheet') $('sheet').hidden = true; };
 
