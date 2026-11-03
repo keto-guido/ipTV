@@ -13,12 +13,18 @@ const FILE = path.join(cfg.DATA, 'epg.json');
 const TTL = 12 * 3600e3, MANUAL_MIN = 3600e3, BEFORE = 2 * 3600, AFTER = 24 * 3600, DESC = 140;
 let cache = null, busy = null, lastFetch = 0, lastError = '';
 let byStream = new Map(); // stream id -> programmes array
+let byEpg = new Map(), lower = new Map(); // epg id -> [stream ids]; epg id -> lowercased 'title desc' per programme
 
 function index() {
   byStream = new Map();
   const list = provider.load();
   if (!cache || !list) return;
-  for (const c of list.channels) if (c.epg && cache.ch[c.epg]) byStream.set(c.id, cache.ch[c.epg]);
+  byEpg = new Map(); lower = new Map();
+  for (const c of list.channels) if (c.epg && cache.ch[c.epg]) {
+    byStream.set(c.id, cache.ch[c.epg]);
+    if (!byEpg.has(c.epg)) { byEpg.set(c.epg, []); lower.set(c.epg, cache.ch[c.epg].map(p => (p[2] + ' ' + (p[3] || '')).toLowerCase())); }
+    byEpg.get(c.epg).push(c.id);
+  }
 }
 function load() {
   try { cache = JSON.parse(fs.readFileSync(FILE, 'utf8')); lastFetch = cache.fetchedAt; } catch { cache = null; }
@@ -128,6 +134,22 @@ module.exports = {
       out[id] = a[k][0] <= t ? a.slice(k, k + 2) : [null, a[k]];
     }
     return out;
+  },
+  // Programmes airing now..+24h whose title/desc contains q. Earliest match per guide channel; live first.
+  search(q, ok, lim = 40) {
+    q = String(q || '').toLowerCase().trim(); if (q.length < 2) return [];
+    const now = Date.now() / 1000, hi = now + 86400, hits = [];
+    for (const [eid, ids] of byEpg) {
+      const ps = cache.ch[eid], lc = lower.get(eid);
+      for (let i = 0; i < ps.length; i++) {
+        const p = ps[i]; if (p[1] <= now || p[0] >= hi || !lc[i].includes(q)) continue;
+        for (const id of ids) if (ok(id)) hits.push({ id, p });
+        break;
+      }
+      if (hits.length > 3000) break;
+    }
+    hits.sort((x, y) => (x.p[0] > now) - (y.p[0] > now) || x.p[0] - y.p[0]);
+    return hits.slice(0, lim);
   },
   range(ids, from, to) {
     const out = {};

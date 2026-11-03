@@ -7,7 +7,7 @@ async function api(p, body) {
   const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j;
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const hm = t => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const hm = t => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago' });
 // now/next line for a channel row
 function nn(e) {
   if (!e) return '';

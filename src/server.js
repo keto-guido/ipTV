@@ -42,6 +42,8 @@ function groupList() {
   const g = l.categories.filter(c => n.get(c.id)).map(c => ({ id: c.id, name: c.name, n: n.get(c.id) }));
   gcache = { l, g }; return g;
 }
+let cmap = null; // id -> channel, rebuilt when the cached list changes
+function chanById() { const l = provider.load(); if (!l) return new Map(); if (!cmap || cmap.l !== l) cmap = { l, m: new Map(l.channels.map(c => [c.id, c])) }; return cmap.m; }
 
 const B = cfg.BASE;
 const VER = Date.now().toString(36); // asset version, changes every restart
@@ -153,7 +155,12 @@ async function handle(req, res) {
       if (total >= off && items.length < lim) items.push(slim(c));
       total++;
     }
-    return gz(req, res, { total, items });
+    let ep;
+    if (!off && !cat && q.length >= 2) {
+      const cm = chanById();
+      ep = epg.search(q, id => { const c = cm.get(id); return c && !h.has(c.cat); }).map(x => ({ c: slim(cm.get(x.id)), p: x.p.slice(0, 3) }));
+    }
+    return gz(req, res, { total, items, epg: ep });
   }
   if (m === 'POST' && (mm = p.match(/^\/api\/watch\/([0-9A-Za-z_-]+)$/))) {
     const v = ch.touch(mm[1], user.sub, true);

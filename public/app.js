@@ -67,11 +67,28 @@ async function tick() {
   }
   if (gone.length && added.length) toast('Switched to ' + added.join(', '));
   else if (gone.length && !live.length) toast(gone.join(', ') + ' stopped');
-  grid.className = 'grid n' + Math.min(live.length, 4);
+  lastLive = live; layout(live);
   empty.hidden = live.length > 0;
   if (view === 'watch') renderNow();
   for (const el of list.querySelectorAll('.ch')) el.classList.toggle('on', !!S.channels.find(c => c.id === el.dataset.id && c.status !== 'down'));
 }
+
+// Switcher: with 2+ active streams, one is shown and the others stay attached (muted, off-screen) so switching is instant.
+let focus = null, lastLive = []; // focus: channel id or 'grid'
+function layout(live) {
+  const sw = $('switch');
+  if (live.length < 2) { sw.hidden = true; for (const t of tiles.values()) t.el.classList.remove('bg'); grid.className = 'grid n' + live.length; return; }
+  if (focus !== 'grid' && !tiles.has(focus)) focus = live[0].id;
+  sw.hidden = false;
+  sw.innerHTML = live.map(c => `<button data-f="${c.id}" class="${focus === c.id ? 'on' : ''}">${esc(c.name)}</button>`).join('') + `<button data-f="grid" class="${focus === 'grid' ? 'on' : ''}" aria-label="Grid">?</button>`;
+  for (const [id, t] of tiles) { const bg = focus !== 'grid' && id !== focus; t.el.classList.toggle('bg', bg); if (bg) t.video.muted = true; }
+  grid.className = 'grid n' + (focus === 'grid' ? Math.min(live.length, 4) : 1);
+}
+$('switch').onclick = e => {
+  const b = e.target.closest('[data-f]'); if (!b) return;
+  focus = b.dataset.f; layout(lastLive);
+  const t = tiles.get(focus); if (t) { for (const o of tiles.values()) o.video.muted = o !== t; t.video.muted = false; play(t.video); }
+};
 
 // ---------- navigation ----------
 function show(v, opt = {}) {
@@ -131,7 +148,9 @@ async function renderChannels(append) {
     let html = r.items.map(c => crow(c, e)).join('');
     if (!append && view === 'groups' && q) { // search: matching groups first
       const ql = q.toLowerCase();
-      html = visible().filter(g => g.name.toLowerCase().includes(ql)).slice(0, 20).map(g => grow(g.id, g.name, g.n)).join('') + html;
+      const now = Date.now() / 1000;
+      const ep = (r.epg || []).map(h => `<div class="card ch" data-id="${h.c.id}" data-name="${esc(h.c.name)}">${h.c.icon ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(h.c.icon)}" onerror="this.style.visibility='hidden'">` : '<img alt="">'}<span class="n"><span>${esc(h.p[2])}</span><span class="sub">${h.p[0] <= now ? '<b class="lv">Live now</b>' : hm(h.p[0])} � ${esc(h.c.name)}</span></span></div>`).join('');
+      html = visible().filter(g => g.name.toLowerCase().includes(ql)).slice(0, 20).map(g => grow(g.id, g.name, g.n)).join('') + (ep ? '<h2 class="sec">Guide</h2>' + ep + (html ? '<h2 class="sec">Channels</h2>' : '') : '') + html;
     }
     got += r.items.length; total = r.total;
     $('more')?.remove();
@@ -186,17 +205,18 @@ async function pick(id, name) {
   if (!S.me.admin) return toast(mine ? 'Channel is down' : 'Not on · ask an admin to start it');
   const others = S.channels.filter(c => c.id !== id);
   if (mine || !others.length) return start(id, name);
-  const btns = others.map(c => ({ t: others.length > 1 ? 'Replace ' + c.name : 'Replace', cls: 'pri', f: () => replace(c.id, id, name) }));
-  if (S.channels.length < S.max) btns.push({ t: 'Add', f: () => start(id, name) });
-  sheet(others.length > 1 ? `Play ${name}?` : `Replace ${others[0].name} with ${name}?`, btns);
+  const under = S.channels.length < S.max;
+  const btns = others.map(c => ({ t: 'Replace ' + c.name, cls: under ? '' : 'pri', f: () => replace(c.id, id, name) }));
+  if (under) btns.unshift({ t: 'Add', cls: 'pri', f: () => start(id, name) });
+  sheet(under ? `Play ${name}?` : `${name}: replace which?`, btns);
 }
 async function start(id, name) {
-  try { await api('/api/select', { id }); toast('Starting ' + name); show('watch'); }
+  try { await api('/api/select', { id }); focus = id; toast('Starting ' + name); show('watch'); }
   catch (e) { toast(e.message === 'cap reached' ? 'Limit reached' : e.message); }
 }
 async function replace(old, id, name) {
   toast('Switching…');
-  try { await api('/api/replace', { old, id }); toast('Starting ' + name); show('watch'); }
+  try { await api('/api/replace', { old, id }); focus = id; toast('Starting ' + name); show('watch'); }
   catch (e) { toast(e.message === 'cap reached' ? 'Limit reached' : e.message); }
 }
 

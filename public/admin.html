@@ -4,10 +4,11 @@
 <div class="row"><a href="__BASE__/#groups">▶</a><a href="__BASE__/guide">▦</a><span style="flex:1"></span><span id="enc" class="dim"></span></div>
 <div id="active"></div>
 <div class="row">
- <label>Max <select id="maxStreams"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+ <label><b>Streams</b> <select id="maxStreams"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
  <label>Res <select id="resolution"><option value="720">720p</option><option value="480">480p</option></select></label>
  <label>Idle <select id="idleSec"><option value="60">1m</option><option value="180">3m</option><option value="300">5m</option><option value="900">15m</option></select></label>
 </div>
+<div class="dim">? Streams must not exceed your provider's connection limit (TiviMate shares it).</div>
 <div class="row"><input id="q" placeholder="Search" autocomplete="off"><select id="cat"><option value="*">★</option><option value="">All</option></select>
 <button id="refresh" title="Refresh list">↻</button><button id="epgRefresh" title="Guide">▦↻</button></div>
 <div id="info" class="dim"></div>
