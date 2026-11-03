@@ -45,6 +45,59 @@ function groupList() {
 let cmap = null; // id -> channel, rebuilt when the cached list changes
 function chanById() { const l = provider.load(); if (!l) return new Map(); if (!cmap || cmap.l !== l) cmap = { l, m: new Map(l.channels.map(c => [c.id, c])) }; return cmap.m; }
 
+// ---- now-playing (NAS dashboard tile) + logo proxy. Read-only: never touches viewers/idle timers. ----
+function iso(t) {
+  const d = new Date(t * 1000);
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(d).map(x => [x.type, x.value]));
+  const off = Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(d.getTime() / 1000) * 1000) / 60000);
+  const a = Math.abs(off), z = (off < 0 ? '-' : '+') + String(Math.floor(a / 60)).padStart(2, '0') + ':' + String(a % 60).padStart(2, '0');
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${z}`;
+}
+function nowPlaying() {
+  const l = provider.load(), cats = new Map(((l && l.categories) || []).map(c => [c.id, c.name]));
+  const t = Date.now() / 1000;
+  const chans = ch.list().filter(c => c.status !== 'down').map(c => {
+    const meta = provider.channel(c.id) || {}, rid = provider.repOf(c.id);
+    const e = epg.nowNext([rid])[rid] || epg.nowNext([c.id])[c.id] || [];
+    const [a, b] = e;
+    return {
+      id: c.id, name: c.name, logo: meta.icon ? `${B}/api/logo/${c.id}` : null, group: cats.get(meta.cat) || null,
+      state: c.status, playing: !!c.ready, viewers: c.viewers,
+      now: a ? { title: a[2], start: iso(a[0]), end: iso(a[1]), desc: a[3] || undefined, progress: Math.max(0, Math.min(1, +((t - a[0]) / (a[1] - a[0])).toFixed(3))) } : null,
+      next: b ? { title: b[2], start: iso(b[0]), end: iso(b[1]) } : null,
+    };
+  });
+  const updatedAt = iso(t), cap = ch.settings.maxStreams;
+  const p = chans.find(c => c.playing) || chans[0];
+  if (!p) return { playing: false, updatedAt, cap, channels: [] };
+  const { now, next, viewers, state } = p;
+  return { playing: chans.some(c => c.playing), channel: { id: p.id, name: p.name, logo: p.logo, group: p.group }, now, next, viewers, state, updatedAt, cap, channels: chans };
+}
+// Logos: fetched once on demand from the channel's icon URL, cached in memory (and on disk), never exposing the source URL.
+const LOGO_DIR = path.join(cfg.DATA, 'logos'), logoMem = new Map(), logoBusy = new Map();
+async function logo(id) {
+  if (logoMem.has(id)) return logoMem.get(id);
+  const f = path.join(LOGO_DIR, id);
+  try { const j = JSON.parse(fs.readFileSync(f + '.json', 'utf8')); const v = j.none ? null : { type: j.type, buf: fs.readFileSync(f) }; logoMem.set(id, v); return v; } catch {}
+  if (logoBusy.has(id)) return logoBusy.get(id);
+  const job = (async () => {
+    const meta = provider.channel(id); let v = null;
+    if (meta && /^https?:\/\//i.test(meta.icon || '')) {
+      try {
+        const res = await fetch(meta.icon, { headers: { 'User-Agent': cfg.UA }, signal: AbortSignal.timeout(8000), redirect: 'follow' });
+        const type = res.headers.get('content-type') || '';
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (res.ok && /^image\/(png|jpe?g|gif|webp)\b/i.test(type) && buf.length < 512e3) v = { type: type.split(';')[0], buf };
+      } catch {}
+    }
+    fs.mkdirSync(LOGO_DIR, { recursive: true });
+    if (v) { fs.writeFileSync(f, v.buf); fs.writeFileSync(f + '.json', JSON.stringify({ type: v.type })); }
+    else fs.writeFileSync(f + '.json', JSON.stringify({ none: true }));
+    if (logoMem.size > 500) logoMem.clear();
+    logoMem.set(id, v); return v;
+  })().finally(() => logoBusy.delete(id));
+  logoBusy.set(id, job); return job;
+}
 const B = cfg.BASE;
 const VER = Date.now().toString(36); // asset version, changes every restart
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
@@ -105,6 +158,11 @@ async function handle(req, res) {
     if (!ch.has(mm[1])) return send(res, 404, { error: 'not found' });
     ch.touch(mm[1], user.sub, false);
     return file(res, path.join(ch.dir(mm[1]), mm[2]), mm[2].endsWith('.ts') ? 'private, max-age=60' : 'no-store');
+  }
+  if (m === 'GET' && (p === '/api/nowplaying' || p === '/api/now-playing')) return send(res, 200, nowPlaying(), 'application/json', { 'Cache-Control': 'private, max-age=10' });
+  if (m === 'GET' && (mm = p.match(/^\/api\/logo\/([0-9A-Za-z_-]{1,20})$/))) {
+    const v = await logo(mm[1]);
+    return v ? send(res, 200, v.buf, v.type, { 'Cache-Control': 'private, max-age=86400' }) : send(res, 404, { error: 'no logo' });
   }
   if (m === 'GET' && p === '/api/status')
     return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
