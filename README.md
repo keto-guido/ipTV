@@ -27,6 +27,7 @@ Gitignored: `config/secrets.env`, `config/jwt_secret`, `data/` (cache, settings,
 | `JWT_SECRET_FILE` | `config/jwt_secret` |
 | `SECRETS_FILE` | `config/secrets.env` |
 | `FFMPEG` | `ffmpeg` (used if `config/local.json` has no `ffmpegPath`) |
+| `TV_RENDITION` | on; `0` turns the TV rendition off (wins over the setting) |
 | `DEV_AUTH` | off – see below |
 
 ## Auth
@@ -65,6 +66,31 @@ Roles: `tv` = watch, `tv-admin` = watch + admin. Unauthenticated HTML → `302 /
 ## Transcode
 `h264_nvenc` (p4, CBR) scaled to 720p ≈2.2 Mbps (or 480p ≈1.2 Mbps), never upscaled; AAC 128k stereo; HLS 3 s segments, 6-segment rolling list with `delete_segments`, written to `hls/<channelId>/`.
 
+## TV rendition
+For the tv-sync clients, the same ffmpeg process (one provider connection, decoded once) also writes a 1080p output through a `split` filter. The phone output keeps all its options, paths and playlist.
+
+| | Phone | TV |
+|---|---|---|
+| Playlist | `/tv/hls/<id>/index.m3u8` | `/tv/hls/<id>/tv/index.m3u8` |
+| Video | 720p/480p, 2.2/1.2 Mbps | up to 1080p (never upscaled), 7 Mbps CBR, `-maxrate 8000k -bufsize 14000k` |
+| Keyframes | up to `-g 60`, forced every 3 s | IDR every 1 s |
+| Segments | 3 s, 6 in the list | 2 s, 8 in the list |
+| Audio | AAC 128k | AAC 160k |
+| `EXT-X-PROGRAM-DATE-TIME` | no | yes |
+
+- **Routes:** same JWT auth and cache headers as the phone HLS routes. Fetching TV files counts as viewer activity, so idle stop behaves the same; if nobody is watching, the channel stops as usual.
+- **Status:** `tv: true|false` per channel in `/api/status` says whether the running ffmpeg has the TV output. The playlist can still 404 for a few seconds after start, as the phone one does.
+- **Off switch:** `tvRendition` in `data/settings.json` (default `true`, also accepted by `POST /api/settings`) or env `TV_RENDITION=0`. Applies at the next channel start. When off, the ffmpeg args are exactly the phone-only ones (`test/tv.test.js` holds the snapshot).
+- **Fallback:** the startup self-test also runs a 720p + 1080p NVENC pair on a local test pattern. If it fails, or a running ffmpeg with the TV output dies with an encoder/NVENC session error, TV stays off until the server restarts and channels run phone-only. The channel comes back through the normal backoff, with no extra or faster restarts. With libx264 the TV rendition is always off, because the CPU would not cope.
+
+Notes for clients:
+- `-g` is 60 rather than the source fps, because reading the fps would mean probing upstream. It is only a ceiling for inputs up to 60 fps; the forced keyframes set the real 1 s GOP (measured at 59.94, 29.97 and 25 fps).
+- Program date times come from ffmpeg: this PC's clock at process start (whole seconds) plus segment durations. They agree for everyone reading the playlist, but carry a constant offset per ffmpeg run (about 0.7 s from real time in testing) and restart after a channel restart.
+- ffmpeg 7 writes the offset without a colon (`2026-11-03T18:00:59.397-0600`). V8's `Date.parse` accepts this, so Node and Chromium are fine; other client runtimes are untested.
+
+## Tests
+`npm test` runs without the provider, and redirects data and HLS paths to a temp dir, so it is safe beside a running server. `test/lavfi.test.js` does real NVENC encodes of a local test pattern (about 45 s, skipped without NVENC).
+
 ## Layout
 ```
 src/server.js     HTTP server, routing, auth gate
@@ -75,6 +101,7 @@ src/epg.js        streaming XMLTV fetch/parse + guide cache
 src/channels.js   ffmpeg lifecycle, cap, backoff, circuit breaker, idle stop
 public/           viewer + admin UI, vendored hls.js
 scripts/          dev launcher, test-token minter
+test/             node:test suites (mocked ffmpeg, routes, real NVENC on lavfi)
 ```
 
 ## NVENC on this PC
