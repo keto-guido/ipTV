@@ -154,7 +154,7 @@ async function handle(req, res) {
     return file(res, f, p.startsWith('/static/vendor/') ? 'private, max-age=86400' : 'no-cache');
   }
   let mm;
-  if (m === 'GET' && (mm = p.match(/^\/hls\/([0-9A-Za-z_-]+)\/(index\.m3u8|seg_\d+\.ts)$/))) {
+  if (m === 'GET' && (mm = p.match(/^\/hls\/([0-9A-Za-z_-]+)\/((?:tv\/)?(?:index\.m3u8|seg_\d+\.ts))$/))) {
     if (!ch.has(mm[1])) return send(res, 404, { error: 'not found' });
     ch.touch(mm[1], user.sub, false);
     return file(res, path.join(ch.dir(mm[1]), mm[2]), mm[2].endsWith('.ts') ? 'private, max-age=60' : 'no-store');
