@@ -10,8 +10,21 @@ const STATE_FILE = path.join(cfg.DATA, 'state.json');
 const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true };
 const WAKE_DEBOUNCE_MS = 30e3;
 const BACKOFF_BASE = 5e3, BACKOFF_MAX = 300e3, RETRY_CAP = 6, STABLE_MS = 60e3;
-const FATAL = /\b(401|403|429|509)\b|Unauthorized|Forbidden|Too Many Requests/i;
+const REFUSED_RETRY_CAP = 3; // a 403 is retried far less patiently than a dropped connection
+const BLOCKED = /\b(401|429|509)\b|Unauthorized|Too Many Requests/i; // bad credentials or over the connection limit: never retried
+const REFUSED = /\b403\b|Forbidden/i; // fatal only if the stream never got going
 const TV_FAIL = /OpenEncodeSessionEx|No capable devices|No NVENC|out of memory|InitializeEncoder|Error while opening encoder/i;
+
+// Pure: decides what a finished ffmpeg run means. err: its stderr tail; segments: this run produced HLS output;
+// wasLive: an earlier run in the current streak did (so a 403 now is a blip, e.g. the old connection not yet released).
+function classifyExit({ err = '', segments = false, wasLive = false, ranMs = 0, failures = 0 }) {
+  if (BLOCKED.test(err)) return { action: 'down', failures, reason: 'provider rejected the connection (auth or connection limit)' };
+  const refused = REFUSED.test(err);
+  if (refused && !segments && !wasLive) return { action: 'down', failures, reason: 'provider refused (403) before the stream started' };
+  const n = (ranMs > STABLE_MS ? 0 : failures) + 1, cap = refused ? REFUSED_RETRY_CAP : RETRY_CAP;
+  if (n > cap) return { action: 'down', failures: n, reason: `${refused ? 'provider kept refusing (403)' : 'stream kept failing'}, gave up after ${cap} retries` };
+  return { action: 'retry', failures: n, reason: refused ? 'provider refused (403), retrying' : 'stream ended, retrying' };
+}
 
 function readJson(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } }
 function writeJson(f, v) { fs.mkdirSync(cfg.DATA, { recursive: true }); fs.writeFileSync(f, JSON.stringify(v, null, 2)); }
@@ -46,7 +59,7 @@ function tvOn() {
 }
 
 function saveState() {
-  writeJson(STATE_FILE, { selected: [...chans.values()].map(c => ({ id: c.id, name: c.name, down: c.status === 'down' })) });
+  writeJson(STATE_FILE, { selected: [...chans.values()].map(c => ({ id: c.id, name: c.name, down: c.status === 'down', reason: c.status === 'down' ? c.reason : undefined })) });
 }
 
 function dirOf(id) { return path.join(cfg.HLS, String(id).replace(/[^0-9A-Za-z_-]/g, '')); }
@@ -89,7 +102,7 @@ function start(c) {
   const out = dirOf(c.id);
   c.tv = tvOn();
   clean(c.id); fs.mkdirSync(c.tv ? path.join(out, 'tv') : out, { recursive: true });
-  c.status = 'starting'; c.startedAt = Date.now(); c.stopping = false; c.err = '';
+  c.status = 'starting'; c.startedAt = Date.now(); c.stopping = false; c.err = ''; c.reason = undefined;
   c.lastAccess = Date.now();
   log(`start ${c.id} (${c.name}) ${encoder} ${settings.resolution}p${c.tv ? ' + tv 1080p' : ''}`);
   const p = spawn(cfg.FFMPEG, ffArgs(c.id, out, c.tv), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
@@ -110,22 +123,40 @@ function onExit(c, p, code) {
   c.proc = null;
   const ran = Date.now() - c.startedAt;
   log(`ffmpeg ${c.id} exited code=${code} after ${Math.round(ran / 1000)}s${c.stopping ? ' (stopped)' : ''}`);
-  if (c.stopping || !chans.has(c.id)) { if (c.status !== 'down') c.status = 'idle'; return pump(); }
+  if (c.stopping || !chans.has(c.id)) { if (c.status !== 'down') c.status = 'idle'; c.wasLive = false; return pump(); }
   // Only flips the flag: the normal backoff below still decides when (and whether) the channel restarts.
   if (c.tv && !tvBroken && TV_FAIL.test(c.err)) { tvBroken = true; log(`tv rendition off until restart: encoder error on ${c.id}`); }
-  if (FATAL.test(c.err)) { c.status = 'down'; c.reason = 'provider refused'; saveState(); return pump(); }
-  if (ran > STABLE_MS) c.failures = 0;
-  c.failures = (c.failures || 0) + 1;
-  if (c.failures > RETRY_CAP) { c.status = 'down'; c.reason = 'retry cap'; saveState(); return pump(); }
+  const segments = fs.existsSync(path.join(dirOf(c.id), 'index.m3u8')); // written once the first segment is complete
+  const r = classifyExit({ err: c.err, segments, wasLive: c.wasLive, ranMs: ran, failures: c.failures });
+  c.wasLive = c.wasLive || segments; c.failures = r.failures; c.reason = r.reason;
+  if (r.action === 'down') { c.status = 'down'; log(`down ${c.id}: ${r.reason}`); saveState(); return pump(); }
   const delay = Math.min(BACKOFF_BASE * 2 ** (c.failures - 1), BACKOFF_MAX) * (0.8 + Math.random() * 0.4);
-  c.status = 'backoff'; c.retryAt = Date.now() + delay;
   log(`backoff ${c.id} #${c.failures} ${Math.round(delay / 1000)}s`);
+  restartIn(c, delay);
+}
+
+function restartIn(c, delay) {
+  c.status = 'backoff'; c.retryAt = Date.now() + delay;
   c.timer = setTimeout(() => {
     c.timer = null;
     if (c.status !== 'backoff') return;
     c.status = 'idle';
     if (Date.now() - c.lastAccess < settings.idleSec * 1000) start(c);
   }, delay);
+}
+
+// Explicit user request: clears down/backoff and restarts, at most once per 30 s however often it is asked.
+function rearm(c) {
+  if (c.status === 'down' || c.status === 'backoff') {
+    if (c.timer) clearTimeout(c.timer);
+    c.timer = null; c.status = 'idle'; c.failures = 0; c.wasLive = false; c.reason = undefined;
+  }
+  c.wanted = true;
+  saveState();
+  const wait = (c.startedAt || 0) + WAKE_DEBOUNCE_MS - Date.now();
+  if (c.proc || wait <= 0) return start(c);
+  c.lastAccess = Date.now(); c.reason = 'retry requested';
+  restartIn(c, wait);
 }
 
 function kill(c) {
@@ -152,7 +183,7 @@ function view(c) {
   let viewers = 0;
   for (const t of c.viewers.values()) if (now - t < 30e3) viewers++;
   return { id: c.id, name: c.name, status: c.status, ready: !!c.proc && ready, tv: !!c.proc && c.tv, viewers,
-    retryIn: c.status === 'backoff' ? Math.ceil((c.retryAt - now) / 1000) : undefined, reason: c.status === 'down' ? c.reason : undefined };
+    retryIn: c.status === 'backoff' ? Math.ceil((c.retryAt - now) / 1000) : undefined, reason: c.status === 'down' || c.status === 'backoff' ? c.reason : undefined };
 }
 
 function make(id, name) {
@@ -162,10 +193,11 @@ function make(id, name) {
 module.exports = {
   settings,
   ffArgs, // exported for tests
+  classifyExit,
   init() {
     detectEncoder();
     for (const s of readJson(STATE_FILE, { selected: [] }).selected || []) {
-      const c = make(s.id, s.name); if (s.down) { c.status = 'down'; c.reason = 'previously down'; }
+      const c = make(s.id, s.name); if (s.down) { c.status = 'down'; c.reason = s.reason || 'previously down'; }
       chans.set(c.id, c);
     }
     try { fs.rmSync(cfg.HLS, { recursive: true, force: true }); } catch {}
@@ -190,11 +222,15 @@ module.exports = {
       if (!meta) return { error: 'unknown channel' };
       c = make(id, meta.name); chans.set(id, c);
     }
-    if (c.status === 'down' || c.status === 'backoff') { if (c.timer) clearTimeout(c.timer); c.timer = null; c.status = 'idle'; c.failures = 0; }
-    c.wanted = true;
-    saveState();
-    start(c);
+    rearm(c);
     return { ok: true, channel: view(c) };
+  },
+  // Any viewer may retry a down channel: it is already admin-selected, so no new upstream can be opened this way.
+  retry(id) {
+    const c = chans.get(String(id));
+    if (!c) return null;
+    if (c.status === 'down') rearm(c);
+    return view(c);
   },
   async replace(oldId, id) {
     if (!/^[0-9A-Za-z_-]{1,20}$/.test(id)) return { error: 'bad id' };
@@ -221,6 +257,14 @@ module.exports = {
       c.wanted = true;
       if (!c.proc && c.status === 'idle' && Date.now() - (c.startedAt || 0) > WAKE_DEBOUNCE_MS) start(c);
     }
+    return view(c);
+  },
+  // Heartbeat: extends the idle timer of a running upstream. On anything else it changes nothing, because a fresh
+  // lastAccess is what lets pump() and the backoff timer start a channel.
+  keepalive(id, who) {
+    const c = chans.get(String(id));
+    if (!c) return null;
+    if (c.proc) { c.lastAccess = Date.now(); c.viewers.set(who, Date.now()); }
     return view(c);
   },
   setSettings(s) {

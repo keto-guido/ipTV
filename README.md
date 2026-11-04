@@ -43,7 +43,7 @@ Roles: `tv` = watch, `tv-admin` = watch + admin. Unauthenticated HTML → `302 /
 ## Provider safety
 - **Concurrency cap** (default 1, admin setting up to 4). Exactly one ffmpeg/upstream per active channel, shared by all viewers.
 - **Channel list** (`get_live_categories`, `get_live_streams`) cached in `data/channels.json`; fetched only if missing or >12 h old. Manual refresh limited to once per 10 min.
-- **Reconnects**: exponential backoff from 5 s doubling to 5 min with ±20 % jitter, max 6 retries, then the channel is marked `down` until an admin re-selects it. Output mentioning 401/403/429/509 marks it `down` immediately. ffmpeg's own reconnect is not used.
+- **Reconnects**: exponential backoff from 5 s doubling to 5 min with ±20 % jitter, max 6 retries (3 for a 403), then the channel is marked `down` with a reason in `/api/status` until someone retries it (admin select, or `POST /api/retry/<id>` for any viewer; restarts stay debounced to once per 30 s). A 401/429/509 marks it `down` immediately, and so does a 403 if the stream never produced a segment; a 403 after segments were produced goes through the backoff. A run longer than 60 s resets the retry count. ffmpeg's own reconnect is not used.
 - **Idle stop**: the upstream is closed when nobody has fetched the playlist/segments (or pinged from the viewer) for the idle timeout (default 3 min). It restarts on demand when a viewer returns, still within the cap.
 - **User-Agent** `VLC/3.0.20 LibVLC/3.0.20` on API calls and ffmpeg.
 - Upstream URLs/credentials never reach clients; all logs pass through a redactor.
@@ -115,3 +115,5 @@ Resolution order: `config/local.json` `ffmpegPath` → `FFMPEG` env → `ffmpeg`
 
 ## Viewer heartbeats
 The viewer posts `/api/watch/<id>` every 5 s. This only bumps last-seen for channels an admin has selected (others → 404); a running upstream is never restarted or duplicated, and restarting an idle-stopped selected channel is debounced to at most once per 30 s.
+
+While a channel is playing and the page is visible, the viewer also posts `/api/watch/<id>?keepalive=1` every 60 s. That only extends the idle timer of a running upstream and never starts one.

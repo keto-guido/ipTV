@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node scripts/dev.js",
-    "test": "node --test test/tv.test.js test/routes.test.js test/lavfi.test.js",
+    "test": "node --test test/tv.test.js test/recovery.test.js test/routes.test.js test/lavfi.test.js",
     "token": "node scripts/mint-token.js"
   },
   "engines": { "node": ">=20" },

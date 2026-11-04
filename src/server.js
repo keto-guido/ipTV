@@ -221,7 +221,12 @@ async function handle(req, res) {
     return gz(req, res, { total, items, epg: ep });
   }
   if (m === 'POST' && (mm = p.match(/^\/api\/watch\/([0-9A-Za-z_-]+)$/))) {
-    const v = ch.touch(mm[1], user.sub, true);
+    // Plain POST starts an idle channel on demand; ?keepalive=1 never starts anything.
+    const v = url.searchParams.get('keepalive') === '1' ? ch.keepalive(mm[1], user.sub) : ch.touch(mm[1], user.sub, true);
+    return v ? send(res, 200, v) : send(res, 404, { error: 'not active' });
+  }
+  if (m === 'POST' && (mm = p.match(/^\/api\/retry\/([0-9A-Za-z_-]+)$/))) {
+    const v = ch.retry(mm[1]);
     return v ? send(res, 200, v) : send(res, 404, { error: 'not active' });
   }
 

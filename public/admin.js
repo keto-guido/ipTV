@@ -5,7 +5,7 @@ async function status() {
   const s = await api('/api/status');
   const e = await nowNext(s.channels.map(c => c.id)).catch(() => ({}));
   $('active').innerHTML = s.channels.map(c => `<div class="card"><span class="n"><span>${esc(c.name)}</span><span class="sub">${nn(e[c.id])}</span></span>
-   <span class="dim">${c.viewers ? '👁 ' + c.viewers : ''}</span><span class="st ${c.status}">${c.status}${c.retryIn ? ' ' + c.retryIn + 's' : ''}</span>
+   <span class="dim">${c.viewers ? '👁 ' + c.viewers : ''}</span><span class="st ${c.status}" title="${esc(c.reason)}">${c.status}${c.retryIn ? ' ' + c.retryIn + 's' : ''}</span>
    ${c.status === 'down' ? `<button data-sel="${c.id}">↻</button>` : ''}<button data-stop="${c.id}">✕</button></div>`).join('');
 }
 let renderSeq = 0, items = [], total = 0;

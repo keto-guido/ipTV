@@ -82,3 +82,24 @@ test('fetching the TV playlist counts as viewer activity', async () => {
   await get(`/hls/${ID}/tv/index.m3u8`, jwt({ roles: ['tv'], sub: 'tv-box' }));
   assert.equal(await viewers(), n + 1);
 });
+
+const post = (p, token = tvUser) => fetch(base + p, { method: 'POST', headers: { Cookie: `msv_session=${token}`, 'Content-Type': 'application/json' }, body: '{}' });
+
+test('keepalive on a stopped channel starts nothing and counts no viewer', async () => {
+  const status = async () => (await (await get('/api/status', tvUser)).json()).channels[0];
+  const was = await status();
+  const r = await post(`/api/watch/${ID}?keepalive=1`, jwt({ roles: ['tv'], sub: 'heartbeat' }));
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).status, 'idle');
+  const now = await status();
+  assert.equal(now.status, 'idle');
+  assert.equal(now.viewers, was.viewers);
+  assert.equal((await post('/api/watch/999?keepalive=1')).status, 404);
+});
+
+test('retry leaves a channel that is not down alone', async () => {
+  const r = await post(`/api/retry/${ID}`);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).status, 'idle');
+  assert.equal((await post('/api/retry/999')).status, 404);
+});

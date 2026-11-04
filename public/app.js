@@ -36,15 +36,53 @@ function resume() { const t = front(); if (t && t.loaded && t.video.paused) play
 function attach(t, id) {
   const src = `${B}/hls/${id}/index.m3u8`;
   t.loaded = true;
-  if (native) { t.video.src = src; play(t.video); return; }
-  t.hls = new Hls({ liveSyncDurationCount: 3, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 });
-  t.hls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) detach(t); });
-  t.hls.loadSource(src); t.hls.attachMedia(t.video);
-  t.hls.on(Hls.Events.MANIFEST_PARSED, () => play(t.video));
+  if (native) {
+    t.video.onerror = () => reattach(t);
+    t.video.onplaying = () => healthy(t);
+    t.video.src = src; play(t.video); return;
+  }
+  const hls = t.hls = new Hls({ liveSyncDurationCount: 3, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 });
+  hls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal && t.hls === hls) onFatal(t, d); });
+  hls.on(Hls.Events.FRAG_BUFFERED, () => healthy(t));
+  hls.loadSource(src); hls.attachMedia(t.video);
+  hls.on(Hls.Events.MANIFEST_PARSED, () => play(t.video));
 }
 function detach(t) {
   if (t.hls) { t.hls.destroy(); t.hls = null; }
+  t.video.onerror = t.video.onplaying = null;
   t.video.removeAttribute('src'); t.video.load(); t.loaded = false;
+}
+function healthy(t) { if (t.tries || t.note) { t.tries = 0; t.note = ''; paint(t); } }
+// Media errors are fixed in place; a second one within 30 s also swaps the audio codec, a third rebuilds the player.
+function onFatal(t, d) {
+  if (d.type !== Hls.ErrorTypes.MEDIA_ERROR) return reattach(t);
+  if (Date.now() - (t.mediaAt || 0) > 30e3) t.media = 0;
+  t.mediaAt = Date.now(); t.media = (t.media || 0) + 1;
+  if (t.media > 2) { t.media = 0; return reattach(t); }
+  if (t.media === 2) t.hls.swapAudioCodec();
+  t.hls.recoverMediaError();
+  play(t.video);
+  t.note = 'Recovering playback…'; paint(t);
+}
+// Rebuilds the player after an exponential delay. tick() does the attach, so it only happens if the server says the channel is ready.
+function reattach(t) {
+  if (t.timer) return;
+  detach(t);
+  t.tries = (t.tries || 0) + 1; t.note = 'Reconnecting…';
+  const ms = Math.min(2000 * 2 ** (t.tries - 1), 60e3) * (0.8 + Math.random() * 0.4);
+  t.timer = setTimeout(() => { t.timer = null; tick(); }, ms);
+  paint(t);
+}
+// Status overlay on a tile, from the last server view (t.v) and the local player state.
+function paint(t) {
+  const v = t.v || {}, down = v.status === 'down';
+  const text = down ? `Channel down: ${v.reason || 'unknown reason'}`
+    : v.status === 'backoff' ? `Reconnecting in ${v.retryIn}s${v.reason ? ' · ' + v.reason : ''}` : t.note;
+  const m = t.el.querySelector('.msg');
+  m.hidden = !text; m.querySelector('span').textContent = text || '';
+  m.querySelector('button').hidden = !down;
+  t.el.classList.toggle('isdown', down);
+  t.el.classList.toggle('wait', !down && (!v.ready || !!t.timer));
 }
 function fullscreen(t) {
   const v = t.video;
@@ -66,7 +104,7 @@ const ICON_ON = '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="cur
 const ICON_OFF = '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3z"/><path d="M16 9l6 6M22 9l-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
 function makeTile() {
   const el = document.createElement('div'); el.className = 'tile';
-  el.innerHTML = `<video playsinline webkit-playsinline autoplay x-webkit-airplay="allow"></video><div class="spin"></div><div class="tag"><b></b><span></span></div><button class="unmute" data-unmute>Tap for sound \u{1F50A}</button><button class="ib big snd" data-snd aria-label="Sound"><i class="on">${ICON_ON}</i><i class="off">${ICON_OFF}</i></button><div class="tb">${canPip ? '<button class="ib big" data-pip aria-label="Picture in picture">\u29c9</button>' : ''}<button class="ib big" data-fs aria-label="Fullscreen">\u26f6</button></div>`;
+  el.innerHTML = `<video playsinline webkit-playsinline autoplay x-webkit-airplay="allow"></video><div class="spin"></div><div class="tag"><b></b><span></span></div><button class="unmute" data-unmute>Tap for sound \u{1F50A}</button><div class="msg" hidden><span></span><button data-retry hidden>Retry</button></div><button class="ib big snd" data-snd aria-label="Sound"><i class="on">${ICON_ON}</i><i class="off">${ICON_OFF}</i></button><div class="tb">${canPip ? '<button class="ib big" data-pip aria-label="Picture in picture">\u29c9</button>' : ''}<button class="ib big" data-fs aria-label="Fullscreen">\u26f6</button></div>`;
   grid.appendChild(el);
   const v = el.querySelector('video');
   v.muted = pref.muted;
@@ -77,6 +115,7 @@ function makeTile() {
     const t = el._t; if (!t) return;
     const snd = e.target.closest('[data-snd]');
     if (document.body.classList.contains('mini') && !snd) return; // grid handler expands the mini player
+    if (e.target.closest('[data-retry]')) return retry(t.id, t.name);
     if (e.target.closest('[data-fs]')) return fullscreen(t);
     if (e.target.closest('[data-pip]')) return pip(t);
     if (snd) { const m = !v.muted; setMuted(v, m); pref.set(m); sync(); if (!m) { soundGate(false); v.play().catch(() => {}); } return; }
@@ -97,22 +136,23 @@ async function tick() {
   if (document.hidden) return;
   try { S = await api('/api/status'); } catch { return; }
   $('cog').hidden = !S.me.admin;
-  const live = S.channels.filter(c => c.status !== 'down');
+  const live = S.channels; // a down channel keeps its tile, to show why and offer a retry
   const gone = [], added = [];
-  for (const [id, t] of tiles) if (!live.find(c => c.id === id)) { detach(t); if (t.video === mainVideo) { spare = t.el; spare._t = null; if (!live.length) spare.hidden = true; } else t.el.remove(); tiles.delete(id); gone.push(t.name); }
+  for (const [id, t] of tiles) if (!live.find(c => c.id === id)) { clearTimeout(t.timer); detach(t); if (t.video === mainVideo) { spare = t.el; spare._t = null; if (!live.length) spare.hidden = true; } else t.el.remove(); tiles.delete(id); gone.push(t.name); }
   for (const c of live) {
     let t = tiles.get(c.id);
     if (!t) {
       const el = spare || makeTile(); spare = null; el.hidden = false;
-      t = { el, video: el.querySelector('video'), name: c.name }; tiles.set(c.id, t); el._t = t;
+      t = { el, video: el.querySelector('video'), id: c.id, name: c.name }; tiles.set(c.id, t); el._t = t;
       added.push(c.name);
     }
     const v = view === 'watch' ? await api('/api/watch/' + c.id, {}).catch(() => c) : c;
     t.el.querySelector('.tag b').textContent = c.name;
-    t.el.classList.toggle('wait', !v.ready);
-    t.el.querySelector('.tag span').textContent = v.ready ? (v.viewers > 1 ? ' · ' + v.viewers : '') : (v.status === 'backoff' ? ` · retry ${v.retryIn}s` : ' · starting…');
-    if (v.ready && !t.loaded) attach(t, c.id);
+    t.v = v;
+    t.el.querySelector('.tag span').textContent = v.ready ? (v.viewers > 1 ? ' · ' + v.viewers : '') : (v.status === 'down' ? ' · down' : v.status === 'backoff' ? ` · retry ${v.retryIn}s` : ' · starting…');
+    if (v.ready && !t.loaded && !t.timer) attach(t, c.id);
     if (!v.ready && t.loaded && v.status !== 'running') detach(t);
+    paint(t);
   }
   if (gone.length && added.length) toast('Switched to ' + added.join(', '));
   else if (gone.length && !live.length) toast(gone.join(', ') + ' stopped');
@@ -279,7 +319,7 @@ async function pick(id, name) {
   await tick();
   const mine = sel(id);
   if (mine && mine.status !== 'down') return watchCh(mine.id);
-  if (!S.me.admin) return toast(mine ? 'Channel is down' : 'Not on · ask an admin to start it');
+  if (!S.me.admin) return mine ? retry(mine.id, mine.name) : toast('Not on · ask an admin to start it');
   if (mine) { id = mine.id; name = mine.name; }
   const others = S.channels.filter(c => c !== mine);
   if (!others.length) return start(id, name);
@@ -292,6 +332,11 @@ async function start(id, name) {
   prime();
   try { await api('/api/select', { id }); focus = id; toast('Starting ' + name); show('watch'); }
   catch (e) { toast(e.message === 'cap reached' ? 'Limit reached' : e.message); }
+}
+async function retry(id, name) {
+  prime();
+  try { const v = await api('/api/retry/' + id, {}); focus = id; toast(v.retryIn ? `Retrying ${name} in ${v.retryIn}s` : 'Retrying ' + name); show('watch'); }
+  catch (e) { toast(e.message); }
 }
 async function replace(old, id, name) {
   prime();
@@ -319,5 +364,10 @@ let mt; $('mq').oninput = () => { clearTimeout(mt); mt = setTimeout(renderManage
 loadFavs().catch(() => {});
 tick().then(async () => { await loadGroups().catch(() => {}); if (!fromHash(true)) show(tiles.size ? 'watch' : 'groups', { pop: true }); });
 setInterval(tick, 5000);
+// Keeps the idle timer from expiring under a viewer; ?keepalive=1 can never start a stream.
+setInterval(() => {
+  if (document.hidden) return;
+  for (const t of tiles.values()) if (t.loaded && !t.video.paused) api(`/api/watch/${t.id}?keepalive=1`, {}).catch(() => {});
+}, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { resume(); tick(); } });
 window.addEventListener('pageshow', e => { if (e.persisted) { resume(); tick(); } });
