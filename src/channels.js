@@ -7,10 +7,11 @@ const provider = require('./provider');
 
 const SETTINGS_FILE = path.join(cfg.DATA, 'settings.json');
 const STATE_FILE = path.join(cfg.DATA, 'state.json');
-const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180 };
+const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true };
 const WAKE_DEBOUNCE_MS = 30e3;
 const BACKOFF_BASE = 5e3, BACKOFF_MAX = 300e3, RETRY_CAP = 6, STABLE_MS = 60e3;
 const FATAL = /\b(401|403|429|509)\b|Unauthorized|Forbidden|Too Many Requests/i;
+const TV_FAIL = /OpenEncodeSessionEx|No capable devices|No NVENC|out of memory|InitializeEncoder|Error while opening encoder/i;
 
 function readJson(f, d) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } }
 function writeJson(f, v) { fs.mkdirSync(cfg.DATA, { recursive: true }); fs.writeFileSync(f, JSON.stringify(v, null, 2)); }
@@ -18,6 +19,7 @@ function writeJson(f, v) { fs.mkdirSync(cfg.DATA, { recursive: true }); fs.write
 const settings = Object.assign({}, DEFAULTS, readJson(SETTINGS_FILE, {}));
 const chans = new Map(); // id -> channel state
 let encoder = null;
+let tvBroken = false; // set once by the startup probe or a runtime encoder failure; lasts for this process
 
 function detectEncoder() {
   // Local-only test (no provider traffic).
@@ -25,6 +27,22 @@ function detectEncoder() {
     '-t', '1', '-c:v', 'h264_nvenc', '-preset', 'p4', '-f', 'null', '-'], { timeout: 20e3 });
   encoder = r.status === 0 ? 'h264_nvenc' : 'libx264';
   log('encoder:', encoder);
+  if (encoder === 'h264_nvenc') probeTv();
+}
+
+// Local-only test (no provider traffic): can NVENC run the 720p and 1080p encodes side by side?
+function probeTv() {
+  const nvenc = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-f', 'null', '-'];
+  const r = spawnSync(cfg.FFMPEG, ['-hide_banner', '-loglevel', 'error', '-t', '1', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=30',
+    '-filter_complex', '[0:v]split=2[a][b];[a]scale=-2:720[p];[b]scale=-2:1080[t]',
+    '-map', '[p]', ...nvenc, '-map', '[t]', ...nvenc], { timeout: 20e3 });
+  tvBroken = r.status !== 0;
+  log('tv rendition probe:', tvBroken ? 'failed, phone output only' : 'ok');
+}
+
+// libx264 never gets the TV output: the CPU would not cope.
+function tvOn() {
+  return settings.tvRendition !== false && process.env.TV_RENDITION !== '0' && encoder === 'h264_nvenc' && !tvBroken;
 }
 
 function saveState() {
@@ -36,32 +54,45 @@ function clean(id) { try { fs.rmSync(dirOf(id), { recursive: true, force: true }
 
 function busy() { return [...chans.values()].filter(c => c.proc || c.status === 'backoff').length; }
 
-function ffArgs(id, out) {
+function ffArgs(id, out, tv) {
   const h = settings.resolution === 480 ? 480 : 720;
   const v = encoder === 'h264_nvenc'
     ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'cbr']
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency'];
   const br = h === 720 ? ['-b:v', '2200k', '-maxrate', '2500k', '-bufsize', '4400k'] : ['-b:v', '1200k', '-maxrate', '1400k', '-bufsize', '2400k'];
-  return ['-hide_banner', '-nostats', '-loglevel', 'warning', '-user_agent', cfg.UA,
-    '-rw_timeout', '15000000', '-i', provider.streamUrl(id),
-    '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
-    '-vf', `scale=-2:min(${h}\\,ih),format=yuv420p`, ...v, ...br,
+  const input = ['-hide_banner', '-nostats', '-loglevel', 'warning', '-user_agent', cfg.UA,
+    '-rw_timeout', '15000000', '-i', provider.streamUrl(id)];
+  const scale = `scale=-2:min(${h}\\,ih),format=yuv420p`;
+  const phone = [...v, ...br,
     '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*3)',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
     '-f', 'hls', '-hls_time', '3', '-hls_list_size', '6',
     '-hls_flags', 'delete_segments+independent_segments+omit_endlist',
     '-hls_segment_filename', path.join(out, 'seg_%05d.ts'), path.join(out, 'index.m3u8')];
+  if (!tv) return [...input, '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn', '-vf', scale, ...phone];
+  return [...input,
+    '-filter_complex', `[0:v:0]split=2[p][t];[p]${scale}[pv];[t]scale=-2:min(1080\\,ih),format=yuv420p[tv]`,
+    '-map', '[pv]', '-map', '0:a:0?', '-sn', '-dn', ...phone,
+    '-map', '[tv]', '-map', '0:a:0?', '-sn', '-dn',
+    ...v, '-b:v', '7000k', '-maxrate', '8000k', '-bufsize', '14000k', '-no-scenecut', '1', '-forced-idr', '1',
+    // Source fps is unknown without probing upstream, so -g is the ceiling for inputs up to 60 fps; the forced 1 s keyframes set the real GOP.
+    '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*1)',
+    '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
+    '-f', 'hls', '-hls_time', '2', '-hls_list_size', '8',
+    '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time',
+    '-hls_segment_filename', path.join(out, 'tv', 'seg_%05d.ts'), path.join(out, 'tv', 'index.m3u8')];
 }
 
 function start(c) {
   if (c.proc || c.status === 'down' || c.status === 'backoff') return false;
   if (busy() >= settings.maxStreams) { c.status = 'idle'; return false; }
   const out = dirOf(c.id);
-  clean(c.id); fs.mkdirSync(out, { recursive: true });
+  c.tv = tvOn();
+  clean(c.id); fs.mkdirSync(c.tv ? path.join(out, 'tv') : out, { recursive: true });
   c.status = 'starting'; c.startedAt = Date.now(); c.stopping = false; c.err = '';
   c.lastAccess = Date.now();
-  log(`start ${c.id} (${c.name}) ${encoder} ${settings.resolution}p`);
-  const p = spawn(cfg.FFMPEG, ffArgs(c.id, out), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+  log(`start ${c.id} (${c.name}) ${encoder} ${settings.resolution}p${c.tv ? ' + tv 1080p' : ''}`);
+  const p = spawn(cfg.FFMPEG, ffArgs(c.id, out, c.tv), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
   c.proc = p;
   p.stderr.on('data', d => {
     const s = redact(d.toString()).trim();
@@ -80,6 +111,8 @@ function onExit(c, p, code) {
   const ran = Date.now() - c.startedAt;
   log(`ffmpeg ${c.id} exited code=${code} after ${Math.round(ran / 1000)}s${c.stopping ? ' (stopped)' : ''}`);
   if (c.stopping || !chans.has(c.id)) { if (c.status !== 'down') c.status = 'idle'; return pump(); }
+  // Only flips the flag: the normal backoff below still decides when (and whether) the channel restarts.
+  if (c.tv && !tvBroken && TV_FAIL.test(c.err)) { tvBroken = true; log(`tv rendition off until restart: encoder error on ${c.id}`); }
   if (FATAL.test(c.err)) { c.status = 'down'; c.reason = 'provider refused'; saveState(); return pump(); }
   if (ran > STABLE_MS) c.failures = 0;
   c.failures = (c.failures || 0) + 1;
@@ -118,7 +151,7 @@ function view(c) {
   const now = Date.now();
   let viewers = 0;
   for (const t of c.viewers.values()) if (now - t < 30e3) viewers++;
-  return { id: c.id, name: c.name, status: c.status, ready: !!c.proc && ready, viewers,
+  return { id: c.id, name: c.name, status: c.status, ready: !!c.proc && ready, tv: !!c.proc && c.tv, viewers,
     retryIn: c.status === 'backoff' ? Math.ceil((c.retryAt - now) / 1000) : undefined, reason: c.status === 'down' ? c.reason : undefined };
 }
 
@@ -128,6 +161,7 @@ function make(id, name) {
 
 module.exports = {
   settings,
+  ffArgs, // exported for tests
   init() {
     detectEncoder();
     for (const s of readJson(STATE_FILE, { selected: [] }).selected || []) {
@@ -193,6 +227,7 @@ module.exports = {
     if (s.maxStreams != null) settings.maxStreams = Math.max(1, Math.min(4, parseInt(s.maxStreams, 10) || 1));
     if (s.resolution != null) settings.resolution = parseInt(s.resolution, 10) === 480 ? 480 : 720;
     if (s.idleSec != null) settings.idleSec = Math.max(30, Math.min(3600, parseInt(s.idleSec, 10) || 180));
+    if (s.tvRendition != null) settings.tvRendition = !!s.tvRendition;
     writeJson(SETTINGS_FILE, settings);
     return settings;
   },
