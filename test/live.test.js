@@ -73,6 +73,21 @@ test('no slate and no source: no playlist yet, rather than an invalid one', () =
   assert.equal(list.render(), null);
 });
 
+test('boundary callback identifies the first published segment and its exact PDT', () => {
+  list.step(now, null, slate);
+  const boundaries = [];
+  list.onBoundary = (key, segment) => boundaries.push({ key, ...segment });
+  A.push(); second(A);
+  assert.equal(boundaries.length, 1);
+  const boundary = boundaries[0], rendered = parse().segs.at(-1);
+  assert.equal(boundary.key, A.key);
+  assert.equal(boundary.seq, rendered.seq);
+  assert.equal(boundary.pdt, rendered.pdt);
+  assert.equal(rendered.disc, true);
+  A.push(); second(A);
+  assert.equal(boundaries.length, 1);
+});
+
 
 test('eight entries and stable target duration', () => {
  list.step(now,null,slate); assert.equal(parse().segs.length,8); assert.equal(parse().target,2);

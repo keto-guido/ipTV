@@ -148,7 +148,7 @@ test('live requests on a stopped channel change nothing: no activity, no start',
   // Fresh activity is what lets the channel loop start a wanted channel, so even a segment must leave it alone.
   const status = async () => (await (await get('/api/status', jwt({ roles: ['tv'], sub: 'watcher' }))).json());
   const was = await status(), who = jwt({ roles: ['tv'], sub: 'live-viewer' });
-  assert.deepEqual(was.live, { id: ID, name: 'Test' });
+  assert.deepEqual(was.live, { id: ID, name: 'Test', slate: true, switchedAt: null, switchSeq: null, switchPdt: null });
   const text = await (await get('/hls/live/phone/index.m3u8', who)).text();
   assert.equal((await get(`/hls/live/phone/${firstSeg(text)}`, who)).status, 200);
   const now = await status();
@@ -180,7 +180,7 @@ test('/api/events opens with the current state, without leaking anything upstrea
   assert.equal(r.headers.get('content-type'), 'text/event-stream');
   const s = await firstEvent(r);
   ctl.abort();
-  assert.deepEqual(s.live, { id: ID, name: 'Test', slate: true });
+  assert.deepEqual(s.live, { id: ID, name: 'Test', slate: true, switchedAt: null, switchSeq: null, switchPdt: null });
   assert.equal(s.channels[0].status, 'idle');
   assert.deepEqual(Object.keys(s.channels[0]).sort(), ['id', 'name', 'ready', 'status', 'tv']); // reason is dropped while undefined
 });

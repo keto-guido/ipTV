@@ -65,6 +65,21 @@ test('every client gets each change', async t => {
   assert.deepEqual([await a.state(), await b.state()], [{ n: 1 }, { n: 1 }]);
 });
 
+test('switching broadcasts request and boundary updates to every connected client', async t => {
+  const hub = createHub(), s = await serve(hub);
+  t.after(s.close);
+  const a = await open(s.url), b = await open(s.url);
+  t.after(a.abort); t.after(b.abort);
+  await a.next(); await b.next();
+  for (const switchSeq of [null, 42]) {
+    const data = { id: '1', switchedAt: 1000, switchSeq, switchPdt: switchSeq === null ? null : new Date(2000).toISOString() };
+    hub.switching(data);
+    const expected = `event: switching\ndata: ${JSON.stringify(data)}`;
+    assert.equal(await a.next(), expected);
+    assert.equal(await b.next(), expected);
+  }
+});
+
 test('sends pings so idle streams stay open through proxies', async t => {
   const hub = createHub({ pingMs: 20 }), s = await serve(hub);
   t.after(s.close);
