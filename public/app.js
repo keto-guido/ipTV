@@ -33,15 +33,16 @@ function play(v) {
   });
 }
 function resume() { const t = front(); if (t && t.loaded && t.video.paused) play(t.video); }
-function attach(t, id) {
-  const src = `${B}/hls/${id}/index.m3u8`;
+const HLS_CONFIG = { liveSyncDuration: 3, liveMaxLatencyDuration: 6, maxLiveSyncPlaybackRate: 1.1, backBufferLength: 30, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 };
+function attach(t) {
+  const src = t.live ? `${B}/hls/live/phone/index.m3u8` : `${B}/hls/${t.id}/index.m3u8`;
   t.loaded = true;
   if (native) {
     t.video.onerror = () => reattach(t);
     t.video.onplaying = () => healthy(t);
     t.video.src = src; play(t.video); return;
   }
-  const hls = t.hls = new Hls({ liveSyncDurationCount: 3, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 });
+  const hls = t.hls = new Hls(HLS_CONFIG);
   hls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal && t.hls === hls) onFatal(t, d); });
   hls.on(Hls.Events.FRAG_BUFFERED, () => healthy(t));
   hls.loadSource(src); hls.attachMedia(t.video);
@@ -64,7 +65,7 @@ function onFatal(t, d) {
   play(t.video);
   t.note = 'Recovering playback…'; paint(t);
 }
-// Rebuilds the player after an exponential delay. tick() does the attach, so it only happens if the server says the channel is ready.
+// Rebuilds the player after an exponential delay; tick() does the attach. Only for fatal errors: channel changes never get here.
 function reattach(t) {
   if (t.timer) return;
   detach(t);
@@ -99,7 +100,8 @@ async function pip(t) {
   } catch {}
 }
 const canPip = document.pictureInPictureEnabled || 'webkitSetPresentationMode' in HTMLVideoElement.prototype;
-// One persistent main <video>: reused across channel changes so iOS keeps its unmuted user activation.
+// One persistent main <video> and player on the live playlist: a channel change happens inside the stream, so iOS keeps
+// its unmuted user activation. Further channels (cap above 1) get ordinary tiles on their own playlists.
 const ICON_ON = '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>';
 const ICON_OFF = '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3z"/><path d="M16 9l6 6M22 9l-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
 function makeTile() {
@@ -123,8 +125,14 @@ function makeTile() {
   });
   return el;
 }
-let spare = makeTile(); spare.hidden = true;
-const mainVideo = spare.querySelector('video');
+const main = { el: makeTile(), live: true, id: null, name: '' };
+const mainVideo = main.video = main.el.querySelector('video');
+main.el.hidden = true; main.el._t = main;
+// Nothing on: the player stays attached but stops fetching slate.
+function mainIdle(on) {
+  if (main.hls) { if (on) main.hls.stopLoad(); else main.hls.startLoad(-1); }
+  if (!on && main.loaded) play(mainVideo);
+}
 // Called synchronously inside a tap, before any await: keeps/primes unmuted playback on the main element.
 function prime() {
   if (pref.muted) return;
@@ -132,17 +140,30 @@ function prime() {
   setMuted(v, false); const p = v.play(); if (p) p.catch(() => {});
 }
 
-async function tick() {
+// Status events and the timer can land while a pass is running; passes never overlap, and one more runs afterwards.
+let ticking = null, again = false;
+function tick() {
+  if (ticking) { again = true; return ticking; }
+  return ticking = refresh().finally(() => { ticking = null; if (again) { again = false; tick(); } });
+}
+async function refresh() {
   if (document.hidden) return;
   try { S = await api('/api/status'); } catch { return; }
   $('cog').hidden = !S.me.admin;
   const live = S.channels; // a down channel keeps its tile, to show why and offer a retry
+  const liveId = S.live ? S.live.id : null;
   const gone = [], added = [];
-  for (const [id, t] of tiles) if (!live.find(c => c.id === id)) { clearTimeout(t.timer); detach(t); if (t.video === mainVideo) { spare = t.el; spare._t = null; if (!live.length) spare.hidden = true; } else t.el.remove(); tiles.delete(id); gone.push(t.name); }
+  for (const [id, t] of tiles) if (t !== main && (id === liveId || !live.find(c => c.id === id))) { clearTimeout(t.timer); detach(t); t.el.remove(); tiles.delete(id); if (id !== liveId) gone.push(t.name); }
+  if (main.id !== liveId) {
+    if (main.id) { tiles.delete(main.id); gone.push(main.name); }
+    main.id = liveId; main.name = liveId ? S.live.name : ''; main.v = null; main.el.hidden = !liveId;
+    if (liveId) { tiles.set(liveId, main); added.push(main.name); }
+    mainIdle(!liveId);
+  }
   for (const c of live) {
     let t = tiles.get(c.id);
     if (!t) {
-      const el = spare || makeTile(); spare = null; el.hidden = false;
+      const el = makeTile();
       t = { el, video: el.querySelector('video'), id: c.id, name: c.name }; tiles.set(c.id, t); el._t = t;
       added.push(c.name);
     }
@@ -150,8 +171,11 @@ async function tick() {
     t.el.querySelector('.tag b').textContent = c.name;
     t.v = v;
     t.el.querySelector('.tag span').textContent = v.ready ? (v.viewers > 1 ? ' · ' + v.viewers : '') : (v.status === 'down' ? ' · down' : v.status === 'backoff' ? ` · retry ${v.retryIn}s` : ' · starting…');
-    if (v.ready && !t.loaded && !t.timer) attach(t, c.id);
-    if (!v.ready && t.loaded && v.status !== 'running') detach(t);
+    if (t.live) { if (!t.loaded && !t.timer) attach(t); } // plays slate until the channel is up
+    else {
+      if (v.ready && !t.loaded && !t.timer) attach(t);
+      if (!v.ready && t.loaded && v.status !== 'running') detach(t);
+    }
     paint(t);
   }
   if (gone.length && added.length) toast('Switched to ' + added.join(', '));
@@ -363,7 +387,15 @@ let mt; $('mq').oninput = () => { clearTimeout(mt); mt = setTimeout(renderManage
 // ---------- boot ----------
 loadFavs().catch(() => {});
 tick().then(async () => { await loadGroups().catch(() => {}); if (!fromHash(true)) show(tiles.size ? 'watch' : 'groups', { pop: true }); });
-setInterval(tick, 5000);
+// Status changes arrive by SSE; the slow poll is the fallback, and also carries the /api/watch wake-up.
+setInterval(tick, 20e3);
+function listen() {
+  if (!window.EventSource) return;
+  const es = new EventSource(B + '/api/events'); // same-origin: the session cookie goes along, so no token in the URL
+  es.addEventListener('state', () => tick());
+  es.onerror = () => { if (es.readyState === EventSource.CLOSED) setTimeout(listen, 30e3); }; // refused; ordinary drops reconnect by themselves
+}
+listen();
 // Keeps the idle timer from expiring under a viewer; ?keepalive=1 can never start a stream.
 setInterval(() => {
   if (document.hidden) return;

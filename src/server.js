@@ -8,6 +8,8 @@ const { userFor } = require('./auth');
 const provider = require('./provider');
 const ch = require('./channels');
 const epg = require('./epg');
+const live = require('./live');
+const { createHub } = require('./events');
 
 // Per-user favorites keyed by JWT sub.
 const FAV_FILE = path.join(cfg.DATA, 'favorites.json');
@@ -154,6 +156,19 @@ async function handle(req, res) {
     return file(res, f, p.startsWith('/static/vendor/') ? 'private, max-age=86400' : 'no-cache');
   }
   let mm;
+  // Constant live playlists. Must stay ahead of the per-channel route, which would take "live" for a channel id.
+  if (m === 'GET' && (mm = p.match(/^\/hls\/live\/(phone|tv)\/(?:index\.m3u8|seg_(\d{1,15})\.ts)$/))) {
+    if (mm[2]) {
+      const f = live.segment(mm[1], mm[2]), cur = ch.liveChannel();
+      if (!f) return send(res, 404, { error: 'not found' });
+      // A segment means someone is watching; playlists are also polled with nobody there. keepalive, not touch: a fresh
+      // lastAccess on a stopped channel would let pump() start it, and live requests never start a stream.
+      if (cur) ch.keepalive(cur.id, user.sub);
+      return file(res, f, 'private, max-age=60');
+    }
+    const list = live.playlist(mm[1]);
+    return list ? send(res, 200, list, TYPES['.m3u8']) : send(res, 503, { error: 'starting' }, 'application/json', { 'Retry-After': '1' });
+  }
   if (m === 'GET' && (mm = p.match(/^\/hls\/([0-9A-Za-z_-]+)\/((?:tv\/)?(?:index\.m3u8|seg_\d+\.ts))$/))) {
     if (!ch.has(mm[1])) return send(res, 404, { error: 'not found' });
     ch.touch(mm[1], user.sub, false);
@@ -164,8 +179,9 @@ async function handle(req, res) {
     const v = await logo(mm[1]);
     return v ? send(res, 200, v.buf, v.type, { 'Cache-Control': 'private, max-age=86400' }) : send(res, 404, { error: 'no logo' });
   }
+  if (m === 'GET' && p === '/api/events') { if (!hub.add(req, res, user)) send(res, 429, { error: 'too many streams' }); return; }
   if (m === 'GET' && p === '/api/status')
-    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
+    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, live: ch.liveChannel(), channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
   if (m === 'GET' && p === '/guide') return send(res, 200, page('guide.html'), TYPES['.html']);
   // ---- guide & favorites: served from local cache only ----
   if (m === 'GET' && p === '/api/favorites') return send(res, 200, byIds(favs[user.sub] || []));
@@ -276,6 +292,15 @@ async function handle(req, res) {
 epg.setExtra(() => [...Object.values(favs).flat(), ...ch.list().map(c => c.id)].map(provider.repOf));
 ch.init();
 epg.init();
+live.init();
+// viewers and retryIn change constantly and are left out, so an event means something actually happened.
+const hub = createHub();
+const snapshot = () => {
+  const cur = ch.liveChannel();
+  return { live: cur && { ...cur, slate: live.onSlate }, channels: ch.list().map(({ id, name, status, ready, tv, reason }) => ({ id, name, status, ready, tv, reason })) };
+};
+hub.publish(snapshot());
+setInterval(() => hub.publish(snapshot()), 500).unref();
 const server = http.createServer((req, res) => {
   handle(req, res).catch(e => { log('error', e.stack || e.message); if (!res.headersSent) send(res, 500, { error: 'error' }); });
 });

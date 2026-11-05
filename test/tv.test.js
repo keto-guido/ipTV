@@ -17,15 +17,15 @@ process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 const OUT = path.join('C:', 'out', '123');
 const URL_STUB = 'http://stub.invalid/x.m3u8';
 
-// What ffArgs produced before the TV rendition existed (captured from commit f8fbe64).
-function legacy(codec, h, br) {
+// The full phone-only argument list. tv=true must keep this output apart from moving the scale into the split.
+function phoneOnly(codec, h, br) {
   return ['-hide_banner', '-nostats', '-loglevel', 'warning', '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
     '-rw_timeout', '15000000', '-i', URL_STUB, '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
-    '-vf', `scale=-2:min(${h}\\,ih),format=yuv420p`, ...codec, ...br,
-    '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*3)',
+    '-vf', `scale=-2:min(${h}\\,ih),format=yuv420p`, ...codec, ...br, ...(codec === NVENC ? ['-no-scenecut', '1', '-forced-idr', '1'] : ['-sc_threshold', '0']),
+    '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*1)',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
-    '-f', 'hls', '-hls_time', '3', '-hls_list_size', '6',
-    '-hls_flags', 'delete_segments+independent_segments+omit_endlist',
+    '-f', 'hls', '-hls_time', '1', '-hls_list_size', '6',
+    '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time',
     '-hls_segment_filename', path.join(OUT, 'seg_%05d.ts'), path.join(OUT, 'index.m3u8')];
 }
 const NVENC = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'cbr'];
@@ -59,16 +59,16 @@ const die = (p, msg, code = 1) => { if (msg) p.stderr.emit('data', Buffer.from(m
 beforeEach(() => { procs = []; realSpawn = cp.spawn; realSync = cp.spawnSync; delete process.env.TV_RENDITION; });
 afterEach(() => { cp.spawn = realSpawn; cp.spawnSync = realSync; delete process.env.TV_RENDITION; });
 
-test('tv=false: args equal the previous args exactly (NVENC 720p)', () => {
-  assert.deepEqual(boot().ffArgs('123', OUT, false), legacy(NVENC, 720, BR720));
+test('tv=false: phone-only args (NVENC 720p)', () => {
+  assert.deepEqual(boot().ffArgs('123', OUT, false), phoneOnly(NVENC, 720, BR720));
 });
 
-test('tv=false: args equal the previous args exactly (NVENC 480p)', () => {
-  assert.deepEqual(boot({ settings: { resolution: 480 } }).ffArgs('123', OUT, false), legacy(NVENC, 480, BR480));
+test('tv=false: phone-only args (NVENC 480p)', () => {
+  assert.deepEqual(boot({ settings: { resolution: 480 } }).ffArgs('123', OUT, false), phoneOnly(NVENC, 480, BR480));
 });
 
-test('tv=false: args equal the previous args exactly (libx264)', () => {
-  assert.deepEqual(boot({ nvenc: false }).ffArgs('123', OUT, false), legacy(X264, 720, BR720));
+test('tv=false: phone-only args (libx264), with no NVENC-only options', () => {
+  assert.deepEqual(boot({ nvenc: false }).ffArgs('123', OUT, false), phoneOnly(X264, 720, BR720));
 });
 
 test('tv=true: phone output keeps every option; only the scale moves into the split', () => {
@@ -76,18 +76,18 @@ test('tv=true: phone output keeps every option; only the scale moves into the sp
     const a = boot({ settings: { resolution: res } }).ffArgs('123', OUT, true);
     const fc = a[a.indexOf('-filter_complex') + 1];
     assert.equal(fc, `[0:v:0]split=2[p][t];[p]scale=-2:min(${res}\\,ih),format=yuv420p[pv];[t]scale=-2:min(1080\\,ih),format=yuv420p[tv]`);
-    // Undo the permitted change and cut at the end of the phone output: must be the legacy args.
+    // Undo the permitted change and cut at the end of the phone output: must be the phone-only args.
     const phoneEnd = a.indexOf(path.join(OUT, 'index.m3u8')) + 1;
     const phone = a.slice(0, phoneEnd);
     phone.splice(phone.indexOf('-filter_complex'), 2);
     phone[phone.indexOf('[pv]')] = '0:v:0';
-    const want = legacy(NVENC, res, br);
+    const want = phoneOnly(NVENC, res, br);
     want.splice(want.indexOf('-vf'), 2);
     assert.deepEqual(phone, want);
   }
 });
 
-test('tv=true: TV output has the 1080p / 1 s keyframe / 2 s segment / PDT options', () => {
+test('tv=true: TV output has the 1080p / 1 s keyframe / 1 s segment / PDT options', () => {
   const a = boot().ffArgs('123', OUT, true);
   const tv = a.slice(a.indexOf(path.join(OUT, 'index.m3u8')) + 1);
   const opt = k => tv[tv.indexOf(k) + 1];
@@ -97,7 +97,7 @@ test('tv=true: TV output has the 1080p / 1 s keyframe / 2 s segment / PDT option
   assert.equal(opt('-force_key_frames'), 'expr:gte(t,n_forced*1)');
   assert.equal(opt('-no-scenecut'), '1');
   assert.equal(opt('-b:a'), '160k'); assert.equal(opt('-ar'), '48000'); assert.equal(opt('-ac'), '2');
-  assert.equal(opt('-hls_time'), '2'); assert.equal(opt('-hls_list_size'), '8');
+  assert.equal(opt('-hls_time'), '1'); assert.equal(opt('-hls_list_size'), '6');
   assert.equal(opt('-hls_flags'), 'delete_segments+independent_segments+omit_endlist+program_date_time');
   assert.equal(opt('-hls_segment_filename'), path.join(OUT, 'tv', 'seg_%05d.ts'));
   assert.equal(tv.at(-1), path.join(OUT, 'tv', 'index.m3u8'));

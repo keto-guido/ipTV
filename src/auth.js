@@ -42,7 +42,7 @@ function verify(token, opt = {}) {
   const roles = Array.isArray(payload.roles) ? payload.roles : [];
   const admin = roles.includes('tv-admin');
   const watch = admin || roles.includes('tv');
-  return { sub: String(payload.sub), name: payload.name || String(payload.sub), watch, admin };
+  return { sub: String(payload.sub), name: payload.name || String(payload.sub), watch, admin, exp: payload.exp };
 }
 
 function parseCookies(h) {

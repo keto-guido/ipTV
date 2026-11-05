@@ -80,6 +80,24 @@ test('repeated 403 trips the breaker after 3 retries, other failures after 6', (
   assert.equal(classifyExit({ err: 'End of file', failures: 6 }).reason, 'stream kept failing, gave up after 6 retries');
 });
 
+test('403 after a long run is a counted restart, until the cap', () => {
+  const run = { err: FORBIDDEN, segments: true, ranMs: 146e3 };
+  assert.equal(classifyExit({ ...run, loops: 0 }).loop, true);
+  const last = classifyExit({ ...run, loops: 4 });
+  assert.equal(last.action, 'retry');
+  assert.equal(last.loop, true);
+  const over = classifyExit({ ...run, loops: 5 });
+  assert.equal(over.action, 'down');
+  assert.equal(over.reason, 'provider keeps cutting the stream (403 after playback), gave up after 5 restarts in 30 min');
+});
+
+test('only a 403 after a run past 60 s with output counts towards the cap', () => {
+  assert.equal(classifyExit({ err: FORBIDDEN, segments: true, ranMs: 60e3, loops: 5 }).action, 'retry');     // too short
+  assert.equal(classifyExit({ err: 'End of file', segments: true, ranMs: 146e3, loops: 5 }).action, 'retry'); // not a 403
+  assert.equal(classifyExit({ err: FORBIDDEN, wasLive: true, ranMs: 146e3, loops: 5 }).action, 'retry');     // no output this run
+  assert.equal(classifyExit({ err: 'End of file', segments: true, ranMs: 146e3 }).loop, undefined);
+});
+
 test('401, 429 and 509 stay fatal even mid-stream', () => {
   for (const err of ['HTTP error 401 Unauthorized', 'HTTP error 429 Too Many Requests', 'Server returned 509'])
     assert.equal(classifyExit({ err, segments: true, wasLive: true, ranMs: 146e3 }).action, 'down', err);
@@ -193,6 +211,59 @@ test('a retried channel gets a fresh verdict: a new 403 before any segment is fa
   assert.equal(state(ch).status, 'down');
   assert.equal(state(ch).reason, 'provider refused (403) before the stream started');
 });
+
+// Plays past the stability limit, gets a 403, and waits out the backoff.
+function cycle(t, ch, gap = 0) {
+  const n = procs.length;
+  segments(ch);
+  t.mock.timers.tick(90e3);
+  ch.touch('123', 'u', false);
+  die(procs[n - 1], FORBIDDEN);
+  if (state(ch).status === 'backoff') t.mock.timers.tick(6100);
+  if (gap) { ch.touch('123', 'u', false); t.mock.timers.tick(gap); }
+  ch.touch('123', 'u', false);
+}
+
+test('played then 403, over and over: five restarts, then down with the reason, and nothing else opens', t => {
+  timers(t);
+  const ch = boot();
+  ch.touch('123', 'u', true);
+  for (let i = 1; i <= 5; i++) { cycle(t, ch); assert.equal(procs.length, i + 1, `restart ${i}`); assert.equal(state(ch).status, 'starting'); }
+  cycle(t, ch);
+  assert.equal(procs.length, 6);
+  assert.equal(state(ch).status, 'down');
+  assert.match(state(ch).reason, /403 after playback.*5 restarts in 30 min/);
+  t.mock.timers.tick(3600e3);
+  ch.touch('123', 'u', true);
+  assert.equal(procs.length, 6);
+});
+
+test('the window rolls: the same cycle spread over more than 30 min never trips', t => {
+  timers(t);
+  const ch = boot();
+  ch.setSettings({ idleSec: 3600 });
+  ch.touch('123', 'u', true);
+  for (let i = 0; i < 12; i++) cycle(t, ch, 300e3); // one every 6.6 min: at most 5 in any 30
+  assert.equal(procs.length, 13);
+  assert.equal(state(ch).status, 'starting');
+});
+
+for (const how of ['retry', 'select']) {
+  test(`${how} after the loop cap restarts it, debounced, with a fresh count`, t => {
+    timers(t);
+    const ch = boot();
+    ch.touch('123', 'u', true);
+    for (let i = 0; i < 6; i++) cycle(t, ch);
+    assert.equal(state(ch).status, 'down');
+    const n = procs.length;
+    t.mock.timers.tick(31e3);
+    ch[how]('123');
+    assert.equal(procs.length, n + 1);
+    for (let i = 1; i <= 5; i++) { cycle(t, ch); assert.equal(state(ch).status, 'starting', `restart ${i}`); }
+    cycle(t, ch);
+    assert.equal(state(ch).status, 'down');
+  });
+}
 
 test('retry of an unselected channel opens nothing', () => {
   const ch = boot();

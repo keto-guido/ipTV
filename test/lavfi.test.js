@@ -66,8 +66,8 @@ test('59.94 fps: phone output is unchanged by the split, TV output meets the bri
   const a = playlist(before), b = playlist(split);
   assert.deepEqual(b.map(s => [s.uri, s.dur]), a.map(s => [s.uri, s.dur]));
   assert.ok(a.length >= 4);
-  for (const s of full(b)) assert.ok(Math.abs(s.dur - 3) < 0.1, `phone segment ${s.dur}`);
-  assert.ok(b.every(s => s.pdt === undefined), 'phone playlist has no PDT');
+  for (const s of full(b)) assert.ok(Math.abs(s.dur - 1) < 0.1, `phone segment ${s.dur}`);
+  assert.ok(b.every(s => Number.isFinite(s.pdt)), 'every phone segment carries PDT');
   assert.ok(!fs.existsSync(path.join(before, 'tv', 'index.m3u8')));
   const seg = b[1].file;
   assert.deepEqual(video(seg), video(a[1].file));
@@ -80,7 +80,7 @@ test('59.94 fps: phone output is unchanged by the split, TV output meets the bri
   // ---- tv ----
   const dir = path.join(split, 'tv'), t = playlist(dir);
   assert.ok(t.length >= 5);
-  for (const s of full(t)) assert.ok(Math.abs(s.dur - 2) < 0.1, `tv segment ${s.dur}`);
+  for (const s of full(t)) assert.ok(Math.abs(s.dur - 1) < 0.1, `tv segment ${s.dur}`);
   assert.ok(t.every(s => Number.isFinite(s.pdt)), 'every segment carries PDT');
   for (let i = 1; i < t.length; i++) assert.ok(Math.abs(t[i].pdt - t[i - 1].pdt - t[i - 1].dur * 1000) < 2, 'PDT follows durations');
   const v = video(t[1].file);
@@ -98,17 +98,19 @@ test('59.94 fps: phone output is unchanged by the split, TV output meets the bri
 });
 
 for (const [label, rate, secs] of [['59.94', '60000/1001', 0], ['29.97', '30000/1001', 9], ['25', '25', 9]]) {
-  test(`${label} fps: TV keyframes every 1 s, and every segment opens on one`, { skip }, async () => {
-    const dir = path.join(secs ? await encode(`r${rate.replace('/', '-')}`, true, rate, secs) : split, 'tv');
-    const segs = full(playlist(dir));
-    const k = segs.flatMap(s => keys(s.file));
-    const gaps = k.slice(1).map((t, i) => t - k[i]);
-    assert.ok(gaps.length >= 3);
-    for (const g of gaps) assert.ok(g > 0.95 && g < 1.05, `keyframe gap ${g} in ${gaps}`);
-    for (const s of segs) {
-      const first = JSON.parse(probe(s.file, '-select_streams', 'v:0', '-read_intervals', '%+#1', '-show_entries', 'frame=key_frame,pict_type').stdout).frames[0];
-      assert.deepEqual([first.key_frame, first.pict_type], [1, 'I'], s.uri);
+  test(`${label} fps: keyframes every 1 s on both renditions, and every segment opens on one`, { skip }, async () => {
+    const out = secs ? await encode(`r${rate.replace('/', '-')}`, true, rate, secs) : split;
+    for (const dir of [out, path.join(out, 'tv')]) {
+      const segs = full(playlist(dir));
+      const k = segs.flatMap(s => keys(s.file));
+      const gaps = k.slice(1).map((t, i) => t - k[i]);
+      assert.ok(gaps.length >= 3);
+      for (const g of gaps) assert.ok(g > 0.95 && g < 1.05, `keyframe gap ${g} in ${gaps}`);
+      for (const s of segs) {
+        const first = JSON.parse(probe(s.file, '-select_streams', 'v:0', '-read_intervals', '%+#1', '-show_entries', 'frame=key_frame,pict_type').stdout).frames[0];
+        assert.deepEqual([first.key_frame, first.pict_type], [1, 'I'], s.uri);
+      }
+      console.log(`measured ${label} fps: ${k.length} keyframes, gaps ${Math.min(...gaps).toFixed(3)}..${Math.max(...gaps).toFixed(3)} s`);
     }
-    console.log(`measured ${label} fps: ${k.length} keyframes, gaps ${Math.min(...gaps).toFixed(3)}..${Math.max(...gaps).toFixed(3)} s`);
   });
 }
