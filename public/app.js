@@ -9,6 +9,37 @@ let G = { fav: 0, groups: [] };          // last /api/groups
 let view = 'watch', cur = null;          // cur: {cat,name} when inside a group
 const toast = t => { const e = $('toast'); e.textContent = t; e.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => { e.hidden = true; }, 2600); };
 
+// Playback-bound switch notice, independent of short action/error toasts.
+const switchToast = document.createElement('div');
+switchToast.className = 'switch-toast'; switchToast.hidden = true;
+switchToast.setAttribute('role', 'status'); document.body.appendChild(switchToast);
+let pendingSwitch = null, switchTimer, seenSwitch = null;
+function hideSwitch() { switchToast.hidden = true; pendingSwitch = null; clearTimeout(switchTimer); }
+function showSwitch(s) {
+  if (!s || !s.switchedAt || Date.now() - s.switchedAt >= 15000) return;
+  if (pendingSwitch && s.switchedAt < pendingSwitch.switchedAt) return;
+  const identity = s.id + ':' + s.switchedAt;
+  if (identity === seenSwitch && !pendingSwitch) return;
+  if (identity !== seenSwitch) {
+    seenSwitch = identity; clearTimeout(switchTimer);
+    switchTimer = setTimeout(hideSwitch, Math.max(0, 15000 - (Date.now() - s.switchedAt)));
+  }
+  pendingSwitch = { ...s, switchSeq: null, switchPdt: null, ...s.phoneSwitch };
+  switchToast.replaceChildren();
+  const spinner = document.createElement('span'); spinner.className = 'switch-spinner'; switchToast.appendChild(spinner);
+  const img = document.createElement('img'); img.src = s.logo || B + '/api/logo/' + encodeURIComponent(s.id); img.alt = '';
+  img.onerror = () => img.remove(); switchToast.appendChild(img);
+  switchToast.appendChild(document.createTextNode('Switching to ' + s.name)); switchToast.hidden = false;
+  if (main.fragment) checkSwitch(main.fragment);
+}
+function checkSwitch(frag) {
+  const s = pendingSwitch;
+  if (!s) return;
+  const pdt = typeof frag.programDateTime === 'number' ? frag.programDateTime : Date.parse(frag.programDateTime);
+  if ((s.switchSeq != null && Number.isFinite(+frag.sn) && +frag.sn >= s.switchSeq) ||
+      (s.switchPdt && Number.isFinite(pdt) && pdt >= Date.parse(s.switchPdt))) hideSwitch();
+}
+
 // ---------- player ----------
 // Sound: remember the user's mute choice; try unmuted first, fall back to muted + one big "Tap for sound".
 const pref = { get muted() { return localStorage.getItem('tvMuted') === '1'; }, set(m) { try { localStorage.setItem('tvMuted', m ? '1' : '0'); } catch {} } };
@@ -45,11 +76,13 @@ function attach(t) {
   const hls = t.hls = new Hls(HLS_CONFIG);
   hls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal && t.hls === hls) onFatal(t, d); });
   hls.on(Hls.Events.FRAG_BUFFERED, () => healthy(t));
+  hls.on(Hls.Events.FRAG_CHANGED, (_, data) => { if (t.live) { t.fragment = data.frag; checkSwitch(data.frag); } });
   hls.loadSource(src); hls.attachMedia(t.video);
   hls.on(Hls.Events.MANIFEST_PARSED, () => play(t.video));
 }
 function detach(t) {
   if (t.hls) { t.hls.destroy(); t.hls = null; }
+  t.fragment = null;
   t.video.onerror = t.video.onplaying = null;
   t.video.removeAttribute('src'); t.video.load(); t.loaded = false;
 }
@@ -126,6 +159,13 @@ function makeTile() {
   return el;
 }
 const main = { el: makeTile(), live: true, id: null, name: '' };
+main.el.querySelector('video').addEventListener('timeupdate', () => {
+  const v = main.video;
+  if (pendingSwitch && pendingSwitch.switchPdt && typeof v.getStartDate === 'function') {
+    const start = +v.getStartDate();
+    if (Number.isFinite(start) && start + v.currentTime * 1000 >= Date.parse(pendingSwitch.switchPdt)) hideSwitch();
+  }
+});
 const mainVideo = main.video = main.el.querySelector('video');
 main.el.hidden = true; main.el._t = main;
 // Nothing on: the player stays attached but stops fetching slate.
@@ -149,6 +189,7 @@ function tick() {
 async function refresh() {
   if (document.hidden) return;
   try { S = await api('/api/status'); } catch { return; }
+  showSwitch(S.live);
   $('cog').hidden = !S.me.admin;
   const live = S.channels; // a down channel keeps its tile, to show why and offer a retry
   const liveId = S.live ? S.live.id : null;
@@ -178,7 +219,7 @@ async function refresh() {
     }
     paint(t);
   }
-  if (gone.length && added.length) toast('Switched to ' + added.join(', '));
+  if (gone.length && added.length) showSwitch(S.live);
   else if (gone.length && !live.length) toast(gone.join(', ') + ' stopped');
   lastLive = live; layout(live);
   empty.hidden = live.length > 0;
@@ -392,7 +433,8 @@ setInterval(tick, 20e3);
 function listen() {
   if (!window.EventSource) return;
   const es = new EventSource(B + '/api/events'); // same-origin: the session cookie goes along, so no token in the URL
-  es.addEventListener('state', () => tick());
+  es.addEventListener('switching', e => { try { showSwitch(JSON.parse(e.data)); } catch {} });
+  es.addEventListener('state', e => { try { showSwitch(JSON.parse(e.data).live); } catch {} tick(); });
   es.onerror = () => { if (es.readyState === EventSource.CLOSED) setTimeout(listen, 30e3); }; // refused; ordinary drops reconnect by themselves
 }
 listen();

@@ -73,9 +73,10 @@ function step() {
 }
 
 module.exports = {
+  onBoundary: () => {},
   init() {
     for (const r of ['phone', 'tv']) {
-      lists[r] = new LivePlaylist({ dir: path.join(cfg.HLS, 'live', r) });
+      lists[r] = new LivePlaylist({ dir: path.join(cfg.HLS, 'live', r), onBoundary: (key, segment) => { module.exports.onBoundary(key, segment, r); } });
       fs.mkdirSync(lists[r].dir, { recursive: true });
     }
     step();

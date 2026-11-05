@@ -91,3 +91,5 @@ a.dash:active span,a.dash:hover span{background:#272727;border-color:#5a5a5a}
 .tile.isdown .unmute{display:none}body.mini #grid .msg{bottom:4px;left:auto;right:4px;transform:none;font-size:12px;padding:4px 8px}
 .tile.wait .spin{display:block}@keyframes tvrot{to{transform:rotate(360deg)}}
 body.mini #grid .unmute{display:none}body.mini #grid .snd{width:40px;height:40px;min-width:40px;min-height:40px;left:4px;bottom:4px}body.mini #grid .snd svg{width:22px;height:22px}
+
+.switch-toast{position:fixed;bottom:5rem;left:50%;transform:translateX(-50%);z-index:1000;display:flex;align-items:center;gap:.6rem;padding:.7rem 1rem;border-radius:12px;background:#18202eee;color:#fff;box-shadow:0 4px 20px #0006;font-size:.9rem;max-width:90vw}.switch-toast[hidden]{display:none}.switch-toast img{width:28px;height:28px;object-fit:contain}.switch-spinner{width:14px;height:14px;border:2px solid #ffffff55;border-top-color:#fff;border-radius:50%;animation:switch-spin .8s linear infinite;flex-shrink:0}@keyframes switch-spin{to{transform:rotate(360deg)}}

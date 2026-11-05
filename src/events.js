@@ -23,6 +23,9 @@ function createHub({ pingMs = PING_MS, maxClients = MAX_CLIENTS, maxPerUser = MA
       req.on('close', () => { clients.delete(c); clearTimeout(end); });
       return true;
     },
+    switching(data) {
+      for (const c of clients) put(c, `event: switching\ndata: ${JSON.stringify(data)}\n\n`);
+    },
     publish(state) {
       const s = JSON.stringify(state);
       if (s === last) return false;

@@ -30,8 +30,8 @@ function keep(from, to) {
 }
 
 class LivePlaylist {
-  constructor({ dir, now = Date.now(), list = LIST, retain = RETAIN, buffer = 2 }) {
-    Object.assign(this, { dir, list, retain, buffer });
+  constructor({ dir, now = Date.now(), list = LIST, retain = RETAIN, buffer = 2, onBoundary = () => {} }) {
+    Object.assign(this, { dir, list, retain, buffer, onBoundary });
     // Seeded from the clock at twice real time, so numbers still move forward across a server restart with nothing persisted.
     this.seq = this.dsn = Math.floor((now - EPOCH) / 500);
     this.entries = [];
@@ -122,10 +122,12 @@ class LivePlaylist {
 
   // Advance by media duration; only publish()/fill() re-anchor at an actual source boundary.
   append({ file, dur, from, owned }) {
-    const changed = this.from !== null && from !== this.from;
+    const boundary = from !== this.from;
+    const changed = this.from !== null && boundary;
     if (changed) this.dsn++;
     this.target = Math.max(this.target, Math.round(dur));
     this.entries.push({ seq: this.seq++, dsn: this.dsn, disc: changed, dur: ms(dur) / 1000, pdt: this.end, file, owned });
+    if (boundary) this.onBoundary(from, this.entries.at(-1));
     this.end += ms(dur);
     this.from = from;
   }

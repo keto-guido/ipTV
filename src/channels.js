@@ -204,6 +204,7 @@ function make(id, name) {
 }
 
 module.exports = {
+  onSwitch: () => {},
   settings,
   ffArgs, // exported for tests
   classifyExit,
@@ -240,6 +241,7 @@ module.exports = {
       if (!meta) return { error: 'unknown channel' };
       c = make(id, meta.name); chans.set(id, c);
     }
+    module.exports.onSwitch({ id: c.id, name: c.name });
     liveId = id;
     rearm(c);
     return { ok: true, channel: view(c) };
@@ -255,6 +257,7 @@ module.exports = {
     if (!/^[0-9A-Za-z_-]{1,20}$/.test(id)) return { error: 'bad id' };
     const meta = provider.channel(id);
     if (!meta) return { error: 'unknown channel' };
+    module.exports.onSwitch({ id, name: meta.name });
     incoming = { id, name: meta.name };
     try { if (oldId && oldId !== id && chans.has(oldId)) await module.exports.stop(oldId); }
     finally { incoming = null; }

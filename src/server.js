@@ -10,6 +10,12 @@ const ch = require('./channels');
 const epg = require('./epg');
 const live = require('./live');
 const { createHub } = require('./events');
+const { createSwitchState } = require('./switch-state');
+const hub = createHub();
+const switches = createSwitchState(data => hub.switching(data));
+ch.onSwitch = channel => switches.request({ ...channel, logo: `${cfg.BASE}/api/logo/${channel.id}` });
+live.onBoundary = (key, segment, rendition) => switches.boundary(key.split(':')[0], segment, rendition);
+const liveState = () => { const cur = ch.liveChannel(); return cur && { ...cur, slate: live.onSlate, ...switches.fields(cur) }; };
 // Keep legacy playlist URLs usable after their selected channel is replaced.
 const liveAliases = new Set();
 
@@ -188,7 +194,7 @@ async function handle(req, res) {
   }
   if (m === 'GET' && p === '/api/events') { if (!hub.add(req, res, user)) send(res, 429, { error: 'too many streams' }); return; }
   if (m === 'GET' && p === '/api/status')
-    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, live: ch.liveChannel(), channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
+    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, live: liveState(), channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
   if (m === 'GET' && p === '/guide') return send(res, 200, page('guide.html'), TYPES['.html']);
   // ---- guide & favorites: served from local cache only ----
   if (m === 'GET' && p === '/api/favorites') return send(res, 200, byIds(favs[user.sub] || []));
@@ -301,10 +307,10 @@ ch.init();
 epg.init();
 live.init();
 // viewers and retryIn change constantly and are left out, so an event means something actually happened.
-const hub = createHub();
+
 const snapshot = () => {
   const cur = ch.liveChannel();
-  return { live: cur && { ...cur, slate: live.onSlate }, channels: ch.list().map(({ id, name, status, ready, tv, reason }) => ({ id, name, status, ready, tv, reason })) };
+  return { live: liveState(), channels: ch.list().map(({ id, name, status, ready, tv, reason }) => ({ id, name, status, ready, tv, reason })) };
 };
 hub.publish(snapshot());
 setInterval(() => hub.publish(snapshot()), 500).unref();
