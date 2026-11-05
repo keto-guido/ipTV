@@ -12,6 +12,7 @@ const live = require('./live');
 const { createHub } = require('./events');
 // Keep legacy playlist URLs usable after their selected channel is replaced.
 const liveAliases = new Set();
+const sports = require('./sports').createSports({provider, epg, data: cfg.DATA, base: cfg.BASE});
 
 // Per-user favorites keyed by JWT sub.
 const FAV_FILE = path.join(cfg.DATA, 'favorites.json');
@@ -145,7 +146,7 @@ async function handle(req, res) {
     return send(res, user ? 403 : 401, { error: user ? 'forbidden' : 'unauthorized' });
   }
   const m = req.method;
-  if (m === 'POST') {
+  if (m === 'POST' || m === 'PUT') {
     // CSRF: JSON only, no cross-site.
     if (!(req.headers['content-type'] || '').startsWith('application/json') || req.headers['sec-fetch-site'] === 'cross-site')
       return send(res, 403, { error: 'forbidden' });
@@ -190,6 +191,12 @@ async function handle(req, res) {
   if (m === 'GET' && p === '/api/status')
     return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, live: ch.liveChannel(), channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
   if (m === 'GET' && p === '/guide') return send(res, 200, page('guide.html'), TYPES['.html']);
+  if (m === 'GET' && p === '/api/sports/today') return send(res, 200, await sports.today(user.sub));
+  if (m === 'GET' && p === '/api/sports/teams') return send(res, 200, sports.teams(user.sub));
+  if (m === 'PUT' && p === '/api/sports/teams') {
+    try { return send(res, 200, sports.setTeams(user.sub, await body(req))); }
+    catch { return send(res, 400, { error: 'invalid teams' }); }
+  }
   // ---- guide & favorites: served from local cache only ----
   if (m === 'GET' && p === '/api/favorites') return send(res, 200, byIds(favs[user.sub] || []));
   if (m === 'POST' && p === '/api/favorites') {
@@ -300,6 +307,7 @@ epg.setExtra(() => [...Object.values(favs).flat(), ...ch.list().map(c => c.id)].
 ch.init();
 epg.init();
 live.init();
+setInterval(require('./sports/schedule').createCheck({provider, channels: ch, epg}), 30000).unref();
 // viewers and retryIn change constantly and are left out, so an event means something actually happened.
 const hub = createHub();
 const snapshot = () => {

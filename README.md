@@ -153,3 +153,11 @@ Resolution order: `config/local.json` `ffmpegPath` → `FFMPEG` env → `ffmpeg`
 The viewer posts `/api/watch/<id>` on every status update: when an event arrives, and at least every 20 s. This only bumps last-seen for channels an admin has selected (others → 404); a running upstream is never restarted or duplicated, and restarting an idle-stopped selected channel is debounced to at most once per 30 s.
 
 While a channel is playing and the page is visible, the viewer also posts `/api/watch/<id>?keepalive=1` every 60 s. That only extends the idle timer of a running upstream and never starts one.
+
+## Sports Today
+
+The Sports tab shows today's ESPN games in Chicago time: Live now, Later, and Final. Tap a channel to use the normal playback controls; stars save team favorites per user (Chicago teams by default). Channel matching reads the local channel and EPG caches only. ESPN scoreboards are cached for ten minutes; unavailable feeds retain stale results. A missing channel is shown explicitly.
+
+Optional `sportsListRefresh: true` in `data/settings.json` enables provider list refreshes at 06:00, 12:00, and 17:00 America/Chicago. It defaults to false, skips active streams and concurrent refreshes, and uses the existing rate-limited refresh path. Sports itself never starts a stream. Run the lightweight feature tests with `node --test test/sports.test.js`.
+
+Sports matching checks run with `npm test` (mocked ESPN, no encoder processes). Media integration tests are separate under `npm run test:media`.

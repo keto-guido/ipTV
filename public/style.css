@@ -91,3 +91,6 @@ a.dash:active span,a.dash:hover span{background:#272727;border-color:#5a5a5a}
 .tile.isdown .unmute{display:none}body.mini #grid .msg{bottom:4px;left:auto;right:4px;transform:none;font-size:12px;padding:4px 8px}
 .tile.wait .spin{display:block}@keyframes tvrot{to{transform:rotate(360deg)}}
 body.mini #grid .unmute{display:none}body.mini #grid .snd{width:40px;height:40px;min-width:40px;min-height:40px;left:4px;bottom:4px}body.mini #grid .snd svg{width:22px;height:22px}
+
+/* Sports uses the same cards and controls as the channel browser. */
+#sports-list{display:block}#sports-list h2{font-size:16px;margin:18px 12px 8px}#sports-list .card{display:block;margin:8px 12px}#sports-list .card>div{font-weight:600}#sports-list .card>button{display:block;max-width:100%;text-align:left;overflow-wrap:anywhere}#sports-list p{margin:6px 0}.sports-badge{display:inline-block;background:#243346;color:#bcd6ff;border-radius:5px;padding:2px 6px;margin-bottom:6px;font-size:11px}

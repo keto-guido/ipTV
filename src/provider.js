@@ -112,4 +112,4 @@ function streamUrl(id) {
   return `${p.origin}/live/${encodeURIComponent(p.username)}/${encodeURIComponent(p.password)}/${encodeURIComponent(id)}.m3u8`;
 }
 
-module.exports = { getList, refresh, channel, streamUrl, load, repOf, alts: id => { const c = load(); return (c && c.alts.get(String(id))) || []; } };
+module.exports = { norm, rank, get refreshing() { return !!inflight; }, getList, refresh, channel, streamUrl, load, repOf, alts: id => { const c = load(); return (c && c.alts.get(String(id))) || []; } };

@@ -7,7 +7,7 @@ const provider = require('./provider');
 
 const SETTINGS_FILE = path.join(cfg.DATA, 'settings.json');
 const STATE_FILE = path.join(cfg.DATA, 'state.json');
-const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true };
+const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true, sportsListRefresh: false };
 const WAKE_DEBOUNCE_MS = 30e3;
 const BACKOFF_BASE = 5e3, BACKOFF_MAX = 300e3, RETRY_CAP = 6, STABLE_MS = 60e3;
 const REFUSED_RETRY_CAP = 3; // a 403 is retried far less patiently than a dropped connection
@@ -293,6 +293,7 @@ module.exports = {
     if (s.maxStreams != null) settings.maxStreams = Math.max(1, Math.min(4, parseInt(s.maxStreams, 10) || 1));
     if (s.resolution != null) settings.resolution = parseInt(s.resolution, 10) === 480 ? 480 : 720;
     if (s.idleSec != null) settings.idleSec = Math.max(30, Math.min(3600, parseInt(s.idleSec, 10) || 180));
+    if (s.sportsListRefresh != null) settings.sportsListRefresh = s.sportsListRefresh === true;
     if (s.tvRendition != null) settings.tvRendition = !!s.tvRendition;
     writeJson(SETTINGS_FILE, settings);
     return settings;

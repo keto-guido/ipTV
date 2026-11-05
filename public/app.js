@@ -214,12 +214,14 @@ function watchCh(id) {
 // ---------- navigation ----------
 function show(v, opt = {}) {
   view = v;
+  $('v-sports').hidden = v !== 'sports';
+  if (v === 'sports') renderSports();
   $('v-watch').hidden = v !== 'watch'; $('v-list').hidden = v !== 'groups' && v !== 'group'; $('v-manage').hidden = v !== 'manage'; $('v-guide').hidden = v !== 'guide';
   document.body.classList.toggle('mini', v !== 'watch'); for (const t of tiles.values()) t.video.controls = false;
   for (const b of document.querySelectorAll('.tabs [data-go]')) b.classList.toggle('on', b.dataset.go === (v === 'group' ? (cur && cur.cat === '*' ? 'favs' : 'groups') : v === 'manage' ? 'groups' : v));
   $('back').hidden = !(v === 'group' && cur.cat !== '*') && v !== 'manage';
   $('tool').hidden = v !== 'groups'; $('tool').textContent = 'Edit';
-  $('title').textContent = v === 'watch' ? 'TV' : v === 'groups' ? 'Groups' : v === 'manage' ? 'Show groups' : v === 'guide' ? 'Guide' : cur.name;
+  $('title').textContent = v === 'watch' ? 'TV' : v === 'groups' ? 'Groups' : v === 'manage' ? 'Show groups' : v === 'guide' ? 'Guide' : v === 'sports' ? 'Sports' : cur.name;
   if (!opt.keepQ && (v === 'groups' || v === 'group')) $('q').value = '';
   if (v === 'groups') renderGroups();
   if (v === 'group') renderChannels(false);
@@ -238,7 +240,7 @@ function fromHash(pop) {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith('g:')) { const x = G.groups.find(y => y.id === h.slice(2)); cur = { cat: h.slice(2), name: x ? x.name : '' }; show('group', { pop }); return true; }
   if (h === 'favs') { cur = { cat: '*', name: 'Favorites' }; show('group', { pop }); return true; }
-  if (/^(watch|groups|guide|manage)$/.test(h)) { show(h, { pop }); return true; }
+  if (/^(watch|groups|guide|manage|sports)$/.test(h)) { show(h, { pop }); return true; }
   return false;
 }
 window.addEventListener('popstate', () => { if (!fromHash(true)) show('watch', { pop: true }); });
@@ -403,3 +405,29 @@ setInterval(() => {
 }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { resume(); tick(); } });
 window.addEventListener('pageshow', e => { if (e.persisted) { resume(); tick(); } });
+
+let sportsBusy = false, sportsTeams = [];
+async function renderSports() {
+ if (sportsBusy || view !== 'sports' || document.hidden) return;
+ sportsBusy = true;
+ try {
+  const [data, teams] = await Promise.all([api('/api/sports/today'), api('/api/sports/teams')]); sportsTeams = teams;
+  const root = $('sports-list'); root.replaceChildren();
+  for (const [key,label] of [['live','Live now'],['later','Later'],['finished','Final']]) {
+   const heading=document.createElement('h2');heading.textContent=label;root.append(heading);
+   if (!data[key].length) {const empty=document.createElement('p');empty.className='dim pad';empty.textContent='No games';root.append(empty);}
+   for (const game of data[key]) {
+    const row=document.createElement('div');row.className='card pad';
+    const badge=document.createElement('small');badge.className='sports-badge';badge.textContent=game.league;row.append(badge);
+    for (const team of [game.away,game.home]) {
+     const line=document.createElement('div'), star=document.createElement('button');star.className='ghost';star.textContent=sportsTeams.includes(team)?'★':'☆';star.setAttribute('aria-label','Favorite '+team);star.setAttribute('aria-pressed',String(sportsTeams.includes(team)));star.onclick=async()=>{star.disabled=true;try {const next=sportsTeams.includes(team)?sportsTeams.filter(t=>t!==team):[...sportsTeams,team];const r=await fetch(B+'/api/sports/teams',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});if(!r.ok)throw Error('Could not save favorites');await renderSports();}catch(e){toast(e.message);}finally{star.disabled=false;}};line.append(star,document.createTextNode(team));row.append(line);
+    }
+    const detail=document.createElement('p');detail.className='dim';detail.textContent=game.startLocal+' CT · '+game.status+(game.score?' · '+game.score:'');row.append(detail);
+    if(game.notFound){const text=document.createElement('small');text.textContent='Channel not found';row.append(text);}
+    for(const c of game.channels){const b=document.createElement('button');b.className='ghost';b.textContent=c.name;b.onclick=()=>pick(c.id,c.name);row.append(b);}root.append(row);
+   }
+  }
+ } catch(e) {toast(e.message);} finally {sportsBusy=false;}
+}
+setInterval(()=>{if(view==='sports'&&!document.hidden)renderSports();},60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&view==='sports')renderSports();});
