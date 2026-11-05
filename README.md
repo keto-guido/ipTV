@@ -158,6 +158,6 @@ While a channel is playing and the page is visible, the viewer also posts `/api/
 
 The Sports tab shows today's ESPN games in Chicago time: Live now, Later, and Final. Tap a channel to use the normal playback controls; stars save team favorites per user (Chicago teams by default). Channel matching reads the local channel and EPG caches only. ESPN scoreboards are cached for ten minutes; unavailable feeds retain stale results. A missing channel is shown explicitly.
 
-Optional `sportsListRefresh: true` in `data/settings.json` enables provider list refreshes at 06:00, 12:00, and 17:00 America/Chicago. It defaults to false, skips active streams and concurrent refreshes, and uses the existing rate-limited refresh path. Sports itself never starts a stream. Run the lightweight feature tests with `node --test test/sports.test.js`.
+`sportsListRefresh` (default true; set false in `data/settings.json` to disable) runs provider list refreshes at 06:00, 12:00, and 17:00 America/Chicago. It skips active streams and concurrent refreshes, and uses the existing rate-limited refresh path. Sports itself never starts a stream. Run the lightweight feature tests with `node --test test/sports.test.js`.
 
 Sports matching checks run with `npm test` (mocked ESPN, no encoder processes). Media integration tests are separate under `npm run test:media`.

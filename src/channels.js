@@ -7,7 +7,7 @@ const provider = require('./provider');
 
 const SETTINGS_FILE = path.join(cfg.DATA, 'settings.json');
 const STATE_FILE = path.join(cfg.DATA, 'state.json');
-const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true, sportsListRefresh: false };
+const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true, sportsListRefresh: true };
 const WAKE_DEBOUNCE_MS = 30e3;
 const BACKOFF_BASE = 5e3, BACKOFF_MAX = 300e3, RETRY_CAP = 6, STABLE_MS = 60e3;
 const REFUSED_RETRY_CAP = 3; // a 403 is retried far less patiently than a dropped connection
