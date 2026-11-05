@@ -29,7 +29,7 @@ before(async () => {
   fs.writeFileSync(path.join(root, 'data', 'state.json'), JSON.stringify({ selected: [{ id: ID, name: 'Test' }] }));
   // A ready-made slate: this fixture has no ffmpeg to generate one.
   for (const h of [720, 1080]) {
-    const d = path.join(root, 'data', 'slate', `v1-${h}p`);
+    const d = path.join(root, 'data', 'slate', `v2-${h}p`);
     fs.mkdirSync(d, { recursive: true });
     fs.writeFileSync(path.join(d, 's_000.ts'), SLATE_BYTES);
     fs.writeFileSync(path.join(d, 'index.m3u8'), '#EXTM3U\n#EXTINF:1.000000,\ns_000.ts\n#EXT-X-ENDLIST\n');
@@ -52,16 +52,13 @@ before(async () => {
 });
 after(() => { proc.removeAllListeners('exit'); proc.kill(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); });
 
-test('TV playlist and segment are served, with the same headers as phone', async () => {
-  for (const f of ['index.m3u8', 'seg_00001.ts']) {
-    const phone = await get(`/hls/${ID}/${f}`, tvUser), tv = await get(`/hls/${ID}/tv/${f}`, tvUser);
-    assert.equal(tv.status, 200);
-    for (const h of ['content-type', 'cache-control', 'x-content-type-options']) assert.equal(tv.headers.get(h), phone.headers.get(h), h);
-  }
-  assert.equal(await (await get(`/hls/${ID}/tv/index.m3u8`, tvUser)).text(), '#EXTM3U tv');
-  assert.equal(await (await get(`/hls/${ID}/index.m3u8`, tvUser)).text(), '#EXTM3U phone');
-  assert.equal((await get(`/hls/${ID}/tv/index.m3u8`, tvUser)).headers.get('cache-control'), 'no-store');
-  assert.equal((await get(`/hls/${ID}/tv/seg_00001.ts`, tvUser)).headers.get('cache-control'), 'private, max-age=60');
+test('legacy playlists redirect to constant live URLs; channel segments remain fetchable', async () => {
+ for(const r of ['', 'tv/']){
+  const res=await get('/hls/'+ID+'/'+r+'index.m3u8',tvUser);
+  assert.equal(res.status,307);assert.equal(res.headers.get('location'),'/tv/hls/live/'+(r?'tv':'phone')+'/index.m3u8');
+  assert.equal(res.headers.get('cache-control'),'no-store');
+  const seg=await get('/hls/'+ID+'/'+r+'seg_00001.ts',tvUser);assert.equal(seg.status,200);assert.equal(seg.headers.get('cache-control'),'private, max-age=60');
+ }
 });
 
 test('TV routes use the same JWT auth', async () => {
@@ -84,11 +81,11 @@ test('only playlist and segment names resolve under tv/', async () => {
   assert.equal((await get('/hls/999/tv/index.m3u8', tvUser)).status, 404);
 });
 
-test('fetching the TV playlist counts as viewer activity', async () => {
+test('fetching a legacy playlist does not start a stream or count a viewer', async () => {
   const viewers = async () => (await (await get('/api/status', jwt({ roles: ['tv'], sub: 'watcher' }))).json()).channels[0].viewers;
   const n = await viewers();
   await get(`/hls/${ID}/tv/index.m3u8`, jwt({ roles: ['tv'], sub: 'tv-box' }));
-  assert.equal(await viewers(), n + 1);
+  assert.equal(await viewers(), n);
 });
 
 const post = (p, token = tvUser) => fetch(base + p, { method: 'POST', headers: { Cookie: `msv_session=${token}`, 'Content-Type': 'application/json' }, body: '{}' });

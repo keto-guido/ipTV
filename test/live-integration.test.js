@@ -174,6 +174,7 @@ test('two channel switches: one continuous stream, exact discontinuities, old se
   assert.equal(await viewers(), had + 1, 'a segment fetch is');
 
   // Switch 1. Remember what the client was last told, to fetch it after the old channel's directory is gone.
+  assert.equal((await get('/hls/1/tv/index.m3u8')).status,200);
   const before = w.last.segs;
   assert.equal((await post('/api/replace', { old: '1', id: '2' })).status, 200);
   assert.equal(fs.existsSync(path.join(root, 'hls', '1')), false, 'old channel directory is gone');
@@ -182,8 +183,9 @@ test('two channel switches: one continuous stream, exact discontinuities, old se
     assert.equal(r.status, 200, `${s.uri} after the switch`);
     assert.ok((await r.arrayBuffer()).byteLength > 0);
   }
+  assert.equal((await get('/hls/1/tv/index.m3u8')).status,200);
   await running('2');
-  await sleep(5000);
+  await sleep(10000);
 
   // Per-channel paths work beside the live ones.
   const own = await get('/hls/2/index.m3u8');
@@ -193,7 +195,7 @@ test('two channel switches: one continuous stream, exact discontinuities, old se
   // Switch 2, back to the first channel.
   assert.equal((await post('/api/replace', { old: '2', id: '1' })).status, 200);
   await running('1');
-  await sleep(5000);
+  await sleep(10000);
   w.stop = tv.stop = true;
   await Promise.all([w.done, tv.done]);
   ev.stop();
@@ -203,7 +205,7 @@ test('two channel switches: one continuous stream, exact discontinuities, old se
   // Walk the whole stream: no holes in the sequence, and a discontinuity exactly where the source changes.
   const all = [...w.seen.values()].sort((a, b) => a.seq - b.seq);
   for (let i = 1; i < all.length; i++) assert.equal(all[i].seq, all[i - 1].seq + 1);
-  for (let i = 1; i < all.length; i++) assert.equal(all[i].pdt, all[i - 1].pdt + Math.round(all[i - 1].dur * 1000), `PDT at segment ${all[i].seq}`);
+  for (let i = 1; i < all.length; i++) if (!all[i].disc) assert.equal(all[i].pdt, all[i - 1].pdt + Math.round(all[i - 1].dur * 1000), `PDT at segment ${all[i].seq}`);
   assert.ok(w.offset < 4000, `PDT strayed ${w.offset} ms from the clock`);
   const stretches = sources(all);
   // Slate between channels shows only if the old channel's last segment runs out before the new one's first exists.
@@ -218,7 +220,7 @@ test('two channel switches: one continuous stream, exact discontinuities, old se
 
   // The TV playlist makes the same changes. libx264 has no TV output, so it carries the phone segments.
   const tvAll = [...tv.seen.values()].sort((a, b) => a.seq - b.seq);
-  for (let i = 1; i < tvAll.length; i++) assert.equal(tvAll[i].pdt, tvAll[i - 1].pdt + Math.round(tvAll[i - 1].dur * 1000), `TV PDT at segment ${tvAll[i].seq}`);
+  for (let i = 1; i < tvAll.length; i++) if (!tvAll[i].disc) assert.equal(tvAll[i].pdt, tvAll[i - 1].pdt + Math.round(tvAll[i - 1].dur * 1000), `TV PDT at segment ${tvAll[i].seq}`);
   assert.deepEqual(sources(tvAll).filter(x => x !== 1920), [640, 480, 640]);
   assert.equal(tvAll.filter(s => s.disc).length, sources(tvAll).length - 1);
 

@@ -20,14 +20,14 @@ function loadSlate(dir) {
 }
 
 // Black and silent with the same codecs as the channel encodes, one keyframe per segment. Timestamps run across the
-// whole set, so the slate only needs a discontinuity when it loops, not between segments.
+// whole set; the live writer retimes each loop to keep MPEG timestamps continuous.
 function slateArgs(h, dir) {
   const w = Math.round(h * 16 / 9 / 2) * 2;
   return ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=c=black:s=${w}x${h}:r=30`,
     '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', String(SLATE_SECS), '-map', '0:v', '-map', '1:a',
     '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-bf', '0', '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
     '-c:a', 'aac', '-b:a', h > 720 ? '160k' : '128k', '-ac', '2', '-ar', '48000',
-    '-f', 'hls', '-hls_time', '1', '-hls_list_size', '0', '-hls_playlist_type', 'vod',
+    '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_playlist_type', 'vod',
     '-hls_segment_filename', path.join(dir, 's_%03d.ts'), path.join(dir, 'index.m3u8')];
 }
 
@@ -47,7 +47,7 @@ function makeSlate(h, dir) {
       fs.renameSync(tmp, dir);
       const list = loadSlate(dir);
       if (!list) return fail('no segments');
-      slates.set(h, { key: `slate:${h}`, list });
+      slates.set(h, { key: `slate:${h}`, list, retime: true });
       log(`slate ${h}p ready`);
     } catch (e) { fail(e.message); }
   });
@@ -57,8 +57,8 @@ function makeSlate(h, dir) {
 function slate(h) {
   let s = slates.get(h);
   if (!s || Date.now() - (s.failedAt || Date.now()) > SLATE_RETRY_MS) {
-    const dir = path.join(cfg.DATA, 'slate', `v1-${h}p`), list = loadSlate(dir);
-    slates.set(h, list ? { key: `slate:${h}`, list } : {});
+    const dir = path.join(cfg.DATA, 'slate', `v2-${h}p`), list = loadSlate(dir);
+    slates.set(h, list ? { key: `slate:${h}`, list, retime: true } : {});
     if (!list) makeSlate(h, dir);
     s = slates.get(h);
   }

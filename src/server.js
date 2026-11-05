@@ -10,6 +10,8 @@ const ch = require('./channels');
 const epg = require('./epg');
 const live = require('./live');
 const { createHub } = require('./events');
+// Keep legacy playlist URLs usable after their selected channel is replaced.
+const liveAliases = new Set();
 
 // Per-user favorites keyed by JWT sub.
 const FAV_FILE = path.join(cfg.DATA, 'favorites.json');
@@ -170,6 +172,11 @@ async function handle(req, res) {
     return list ? send(res, 200, list, TYPES['.m3u8']) : send(res, 503, { error: 'starting' }, 'application/json', { 'Retry-After': '1' });
   }
   if (m === 'GET' && (mm = p.match(/^\/hls\/([0-9A-Za-z_-]+)\/((?:tv\/)?(?:index\.m3u8|seg_\d+\.ts))$/))) {
+    if (mm[2].endsWith('index.m3u8') && (ch.has(mm[1]) || liveAliases.has(mm[1]))) {
+      liveAliases.add(mm[1]);
+      const rendition = mm[2].startsWith('tv/') ? 'tv' : 'phone';
+      return send(res, 307, '', TYPES['.m3u8'], { Location: `${cfg.BASE}/hls/live/${rendition}/index.m3u8`, 'Cache-Control': 'no-store' });
+    }
     if (!ch.has(mm[1])) return send(res, 404, { error: 'not found' });
     ch.touch(mm[1], user.sub, false);
     return file(res, path.join(ch.dir(mm[1]), mm[2]), mm[2].endsWith('.ts') ? 'private, max-age=60' : 'no-store');

@@ -33,7 +33,7 @@ function play(v) {
   });
 }
 function resume() { const t = front(); if (t && t.loaded && t.video.paused) play(t.video); }
-const HLS_CONFIG = { liveSyncDuration: 3, liveMaxLatencyDuration: 6, maxLiveSyncPlaybackRate: 1.1, backBufferLength: 30, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 };
+const HLS_CONFIG = { liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.05, backBufferLength: 30, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 };
 function attach(t) {
   const src = t.live ? `${B}/hls/live/phone/index.m3u8` : `${B}/hls/${t.id}/index.m3u8`;
   t.loaded = true;

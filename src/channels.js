@@ -89,7 +89,7 @@ function ffArgs(id, out, tv) {
   // Source fps is unknown without probing upstream, so -g is the ceiling for inputs up to 60 fps; the forced keyframes set the real GOP.
   const gop = [...(encoder === 'h264_nvenc' ? ['-no-scenecut', '1', '-forced-idr', '1'] : ['-sc_threshold', '0']),
     '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*1)'];
-  const hls = ['-f', 'hls', '-hls_time', '1', '-hls_list_size', '6', '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time'];
+  const hls = ['-f', 'hls', '-hls_time', '2', '-hls_list_size', '8', '-hls_delete_threshold', '32', '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time'];
   const phone = [...v, ...br, ...gop,
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
     ...hls,

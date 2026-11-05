@@ -4,10 +4,11 @@
 // delete_segments and clean() can't touch anything still listed here. This class owns their lifetime.
 const fs = require('fs');
 const path = require('path');
+const { retime } = require('./slate-ts');
 
-const LIST = 6;          // segments in the playlist
-const RETAIN = 14;       // ...plus these stay fetchable after leaving it, for players still working through an older copy
-const MAX_LAG_MS = 1500; // a running source may leave the timeline this far behind the clock before slate fills in
+const LIST = 8;
+const RETAIN = 35_000;   // milliseconds after leaving the playlist, independent of segment rate
+const MAX_LAG_MS = 5000; // no new input for five seconds before falling back to slate
 const EPOCH = Date.UTC(2026, 0, 1);
 
 // Parses an ffmpeg media playlist into [{ num, uri, dur }].
@@ -29,18 +30,22 @@ function keep(from, to) {
 }
 
 class LivePlaylist {
-  constructor({ dir, now = Date.now(), list = LIST, retain = RETAIN }) {
-    Object.assign(this, { dir, list, retain });
+  constructor({ dir, now = Date.now(), list = LIST, retain = RETAIN, buffer = 2 }) {
+    Object.assign(this, { dir, list, retain, buffer });
     // Seeded from the clock at twice real time, so numbers still move forward across a server restart with nothing persisted.
     this.seq = this.dsn = Math.floor((now - EPOCH) / 500);
     this.entries = [];
-    this.end = null;   // ms: PDT of the next segment. Only ever moves by the duration of a segment.
+    this.end = null;   // ms: PDT of the next segment. Continuous within a source; re-anchored at source boundaries.
     this.from = null;  // source of the newest segment
     this.key = null;   // source wanted now
     this.last = null;  // newest ffmpeg segment number taken from the current source
-    this.gap = false;  // a segment of the current source could not be taken
     this.pos = 0;      // next slate segment
     this.trash = [];   // files Windows would not let go of yet
+    this.lastInput = now;
+    this.observed = null;
+    this.target = 2;
+    this.pending = [];
+    this.pendingSeq = 0;
   }
 
   get onSlate() { return !this.from || this.from.startsWith('slate:'); }
@@ -48,67 +53,86 @@ class LivePlaylist {
   // One poll. src: { key, dir } or null, the running ffmpeg output; slate: { key, list: [{ file, dur }] } or null until it exists.
   step(now, src, slate) {
     const key = src ? src.key : null;
-    if (key !== this.key) { this.key = key; this.last = null; this.gap = false; }
-    // Catch up before taking fresh media, including a late first segment. Moving
-    // PDT directly would leave a hole; slate supplies the missing duration.
-    const before = this.seq;
-    if (src && this.end !== null && now - this.end >= MAX_LAG_MS) this.fill(now, slate);
-    if (!(src && this.ingest(src, now)) && this.seq === before) this.fill(now, slate);
-    this.trim();
+    if (key !== this.key) { this.key = key; this.last = null; }
+    if (src) this.ingest(src, now);
+    this.publish(now);
+    if ((!this.pending.length && now - this.lastInput >= MAX_LAG_MS) || this.from === null || this.onSlate) this.fill(now, slate);
+    this.trim(now);
   }
 
   ingest(src, now) {
     let text;
     try { text = fs.readFileSync(path.join(src.dir, 'index.m3u8'), 'utf8'); } catch { return false; } // not written yet
     const media = parseMedia(text);
+    const newest = media.at(-1);
+    const observed = newest && `${src.key}:${newest.num}`;
+    if (observed && observed !== this.observed) { this.observed = observed; this.lastInput = now; }
     let got = false;
-    // Joining a source that already has a list starts at its newest segment: older ones would put the timeline ahead of the clock.
-    for (const s of this.last === null ? media.slice(-1) : media) {
+    // Copy completed input before a switch can delete the channel directory.
+    for (const s of this.last === null ? media.slice(-(this.buffer + 1)) : media) {
       if (this.last !== null && s.num <= this.last) continue;
-      const gap = this.gap || (this.last !== null && s.num !== this.last + 1);
+      const file = path.join(this.dir, 'pending_' + this.pendingSeq++ + '.ts');
+      if (!keep(path.join(src.dir, s.uri), file)) break;
       this.last = s.num;
-      const file = path.join(this.dir, `seg_${this.seq}.ts`);
-      if (!keep(path.join(src.dir, s.uri), file)) { this.gap = true; continue; }
-      this.gap = false;
-      this.end ??= now - ms(s.dur);
-      this.append({ file, dur: s.dur, from: src.key, owned: true, disc: gap });
+      this.pending.push({ file, dur: s.dur, from: src.key, owned: true });
       got = true;
     }
     return got;
   }
 
+  publish(now) {
+    while (this.pending.length) {
+      const s = this.pending[0];
+      const queued = this.pending.filter(e => e.from === s.from).length;
+      if (s.from === this.key && queued <= this.buffer && now - this.lastInput < MAX_LAG_MS) break;
+      const changed = this.from !== s.from;
+      if (this.end === null || changed) this.end = now - ms(s.dur);
+      // Pace startup bursts; keep PDT continuous inside each source.
+      if (!changed && this.end + ms(s.dur) > now + 250) break;
+      const file = path.join(this.dir, 'seg_' + this.seq + '.ts');
+      fs.renameSync(s.file, file);
+      this.pending.shift();
+      this.append({ ...s, file });
+    }
+  }
+
   fill(now, slate) {
     if (!slate || !slate.list.length) return;
-    // The source on air gets some slack between its segments. With anything else due, slate holds the timeline at the
-    // clock, so the next source starts ahead of it and has that slack from its first segment.
-    const slack = this.key && this.from === this.key ? MAX_LAG_MS : 0;
-    if (this.end !== null && now - this.end < slack) return;
+    if (this.end !== null && this.end > now) return;
     const { list } = slate;
-    if (this.from !== slate.key) this.pos = 0;
+    if (this.from !== slate.key) { this.pos = 0; this.slateOffset = 0; this.slateCounters = new Map(); }
     // The first playlist of a process is already full: Safari wants several segments before it will start a live stream.
     if (this.end === null) {
       this.end = now;
       for (let i = 0; i < this.list; i++) this.end -= ms(list[i % list.length].dur);
     }
+    if (this.from !== null && this.from !== slate.key) this.end = now - ms(list[this.pos].dur);
     do {
-      // Slate timestamps run continuously until the loop wraps back to its start.
-      const wrap = this.from === slate.key && this.pos === 0, s = list[this.pos];
-      this.append({ file: s.file, dur: s.dur, from: slate.key, owned: false, disc: wrap });
+      const s = list[this.pos];
+      let file = s.file;
+      if (slate.retime) {
+        file = path.join(this.dir, `seg_${this.seq}.ts`);
+        fs.writeFileSync(file, retime(fs.readFileSync(s.file), this.slateOffset, this.slateCounters));
+      }
+      this.append({ file, dur: s.dur, from: slate.key, owned: !!slate.retime });
       this.pos = (this.pos + 1) % list.length;
+      if (this.pos === 0) this.slateOffset += list.reduce((n, s) => n + ms(s.dur) * 90, 0);
     } while (this.end < now);
   }
 
-  // The one place the timeline moves: each segment starts where the last one ended, whatever the source.
-  append({ file, dur, from, owned, disc }) {
-    const changed = this.from !== null && (disc || from !== this.from);
+  // Advance by media duration; only publish()/fill() re-anchor at an actual source boundary.
+  append({ file, dur, from, owned }) {
+    const changed = this.from !== null && from !== this.from;
     if (changed) this.dsn++;
+    this.target = Math.max(this.target, Math.round(dur));
     this.entries.push({ seq: this.seq++, dsn: this.dsn, disc: changed, dur: ms(dur) / 1000, pdt: this.end, file, owned });
     this.end += ms(dur);
     this.from = from;
   }
 
-  trim() {
-    while (this.entries.length > this.list + this.retain) {
+  trim(now) {
+    for (const e of this.entries.slice(0, -this.list)) e.leftAt ??= now;
+    while (this.entries.length > this.list && now - this.entries[0].leftAt > this.retain) {
       const e = this.entries.shift();
       if (e.owned) this.trash.push(e.file);
     }
@@ -118,7 +142,7 @@ class LivePlaylist {
   render() {
     const w = this.entries.slice(-this.list);
     if (!w.length) return null;
-    const out = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${Math.max(1, ...w.map(e => Math.round(e.dur)))}`,
+    const out = ['#EXTM3U', '#EXT-X-VERSION:3', `#EXT-X-TARGETDURATION:${this.target}`,
       '#EXT-X-INDEPENDENT-SEGMENTS', `#EXT-X-MEDIA-SEQUENCE:${w[0].seq}`,
       // Counts the discontinuities before the first listed segment; a tag still on that segment is listed below.
       `#EXT-X-DISCONTINUITY-SEQUENCE:${w[0].dsn - (w[0].disc ? 1 : 0)}`];

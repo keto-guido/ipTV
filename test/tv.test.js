@@ -24,7 +24,7 @@ function phoneOnly(codec, h, br) {
     '-vf', `scale=-2:min(${h}\\,ih),format=yuv420p`, ...codec, ...br, ...(codec === NVENC ? ['-no-scenecut', '1', '-forced-idr', '1'] : ['-sc_threshold', '0']),
     '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*1)',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
-    '-f', 'hls', '-hls_time', '1', '-hls_list_size', '6',
+    '-f', 'hls', '-hls_time', '2', '-hls_list_size', '8', '-hls_delete_threshold', '32',
     '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time',
     '-hls_segment_filename', path.join(OUT, 'seg_%05d.ts'), path.join(OUT, 'index.m3u8')];
 }
@@ -87,7 +87,7 @@ test('tv=true: phone output keeps every option; only the scale moves into the sp
   }
 });
 
-test('tv=true: TV output has the 1080p / 1 s keyframe / 1 s segment / PDT options', () => {
+test('tv=true: TV output has the 1080p / 1 s keyframe / 2 s segment / PDT options', () => {
   const a = boot().ffArgs('123', OUT, true);
   const tv = a.slice(a.indexOf(path.join(OUT, 'index.m3u8')) + 1);
   const opt = k => tv[tv.indexOf(k) + 1];
@@ -97,7 +97,7 @@ test('tv=true: TV output has the 1080p / 1 s keyframe / 1 s segment / PDT option
   assert.equal(opt('-force_key_frames'), 'expr:gte(t,n_forced*1)');
   assert.equal(opt('-no-scenecut'), '1');
   assert.equal(opt('-b:a'), '160k'); assert.equal(opt('-ar'), '48000'); assert.equal(opt('-ac'), '2');
-  assert.equal(opt('-hls_time'), '1'); assert.equal(opt('-hls_list_size'), '6');
+  assert.equal(opt('-hls_time'), '2'); assert.equal(opt('-hls_list_size'), '8');
   assert.equal(opt('-hls_flags'), 'delete_segments+independent_segments+omit_endlist+program_date_time');
   assert.equal(opt('-hls_segment_filename'), path.join(OUT, 'tv', 'seg_%05d.ts'));
   assert.equal(tv.at(-1), path.join(OUT, 'tv', 'index.m3u8'));

@@ -66,7 +66,7 @@ test('59.94 fps: phone output is unchanged by the split, TV output meets the bri
   const a = playlist(before), b = playlist(split);
   assert.deepEqual(b.map(s => [s.uri, s.dur]), a.map(s => [s.uri, s.dur]));
   assert.ok(a.length >= 4);
-  for (const s of full(b)) assert.ok(Math.abs(s.dur - 1) < 0.1, `phone segment ${s.dur}`);
+  for (const s of full(b)) assert.ok(Math.abs(s.dur - 2) < 0.1, `phone segment ${s.dur}`);
   assert.ok(b.every(s => Number.isFinite(s.pdt)), 'every phone segment carries PDT');
   assert.ok(!fs.existsSync(path.join(before, 'tv', 'index.m3u8')));
   const seg = b[1].file;
@@ -80,7 +80,7 @@ test('59.94 fps: phone output is unchanged by the split, TV output meets the bri
   // ---- tv ----
   const dir = path.join(split, 'tv'), t = playlist(dir);
   assert.ok(t.length >= 5);
-  for (const s of full(t)) assert.ok(Math.abs(s.dur - 1) < 0.1, `tv segment ${s.dur}`);
+  for (const s of full(t)) assert.ok(Math.abs(s.dur - 2) < 0.1, `tv segment ${s.dur}`);
   assert.ok(t.every(s => Number.isFinite(s.pdt)), 'every segment carries PDT');
   for (let i = 1; i < t.length; i++) assert.ok(Math.abs(t[i].pdt - t[i - 1].pdt - t[i - 1].dur * 1000) < 2, 'PDT follows durations');
   const v = video(t[1].file);

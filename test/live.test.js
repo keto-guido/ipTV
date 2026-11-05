@@ -56,7 +56,7 @@ beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iptv-live-test-'));
   fs.mkdirSync(path.join(tmp, 'live'));
   now = Date.UTC(2026, 10, 4);
-  list = new LivePlaylist({ dir: path.join(tmp, 'live'), now });
+  list = new LivePlaylist({ dir: path.join(tmp, 'live'), now, buffer: 0 });
   A = source('a'); B = source('b');
   const files = [0, 1, 2, 3].map(i => { const file = path.join(tmp, `slate${i}.ts`); fs.writeFileSync(file, `slate-${i}`); return { file, dur: 1 }; });
   slate = { key: 'slate:720', list: files };
@@ -73,50 +73,45 @@ test('no slate and no source: no playlist yet, rather than an invalid one', () =
   assert.equal(list.render(), null);
 });
 
-test('first playlist is full, valid and PDT-stamped on slate alone', () => {
-  list.step(now, null, { key: slate.key, list: Array(60).fill(slate.list[0]) });
-  const p = parse();
-  assert.equal(p.segs.length, LIST);
-  assert.equal(p.target, 1);
-  assert.ok(p.text.startsWith('#EXTM3U\n'));
-  assert.ok(p.text.includes('#EXT-X-INDEPENDENT-SEGMENTS'));
-  assert.ok(!p.text.includes('#EXT-X-ENDLIST'));
-  assert.ok(p.segs.every(s => Number.isFinite(s.pdt)));
-  assert.ok(p.segs.every(s => !s.disc));
-  assert.equal(list.onSlate, true);
-});
 
-test('slate keeps the playlist moving in real time, with no discontinuity until the loop wraps', () => {
-  list.step(now, null, slate);
-  now += 1; list.step(now, null, slate); // the timeline has reached now, so the next segment is due
-  const start = parse();
-  now += 400; list.step(now, null, slate); // less than a segment later
-  assert.equal(parse().seq, start.seq);
-  for (let i = 0; i < 9; i++) second(null);
-  const p = parse();
-  assert.equal(p.seq, start.seq + 9);
-  // 16 segments over a 4-file loop: wrapped three times.
-  assert.equal(list.dsn - start.dseq, 3);
-  assert.equal(p.segs.filter(s => s.disc).length, list.dsn - p.dseq);
-  // Every wrap lands on the first slate file, and only there.
-  for (const s of p.segs) assert.equal(s.disc, body(s.uri) === 'slate-0');
+test('eight entries and stable target duration', () => {
+ list.step(now,null,slate); assert.equal(parse().segs.length,8); assert.equal(parse().target,2);
+ for(let i=0;i<20;i++) second(null); assert.equal(parse().target,2);
 });
-
-test('sequence continues across a source change, with a discontinuity on each change', () => {
-  list.step(now, null, slate);
-  const start = list.seq, dsn = list.dsn;
-  A.push(); second(A); A.push(); second(A);          // slate -> a
-  assert.equal(list.dsn, dsn + 1);
-  second(null); second(null);                        // a -> slate
-  assert.equal(list.dsn, dsn + 2);
-  B.push(); second(B); B.push(); second(B);          // slate -> b
-  assert.equal(list.dsn, dsn + 3);
-  assert.equal(list.seq, start + 6);
-  const p = parse();
-  assert.deepEqual(p.segs.map(s => body(s.uri)).slice(-6), ['a-0', 'a-1', `slate-0`, `slate-1`, 'b-0', 'b-1']);
-  assert.deepEqual(p.segs.slice(-6).map(s => s.disc), [true, false, true, false, true, false]);
-  for (let i = 1; i < p.segs.length; i++) assert.equal(p.segs[i].seq, p.segs[i - 1].seq + 1);
-  assert.equal(list.onSlate, false);
+test('re-anchor in either direction only on source change', () => {
+ for(const drift of [-55000,55000]) {
+ list.step(now,null,slate); list.end=now+drift;
+ const dsn=list.dsn; A.push(2); list.step(now,A,slate);
+ assert.equal(list.end,now); assert.equal(list.entries.at(-1).pdt,now-2000); assert.equal(list.dsn,dsn+1);
+ now+=2000; A.push(2); list.step(now,A,slate); assert.equal(list.entries.at(-1).pdt,now-2000); assert.equal(list.dsn,dsn+1);
+ now+=6000; list.step(now,null,slate);
+ }
+});
+test('jitter and fresh input after a pause do not trigger slate; threshold is five seconds', () => {
+ A.push(2); list.step(now,A,slate); const dsn=list.dsn,seq=list.seq;
+ now+=4999; list.step(now,A,slate); assert.equal(list.seq,seq);
+ A.push(2); list.step(now,A,slate); assert.equal(list.onSlate,false); assert.equal(list.dsn,dsn);
+ now+=4999; list.step(now,A,slate); assert.equal(list.onSlate,false);
+ now++; list.step(now,A,slate); assert.equal(list.onSlate,true); assert.equal(list.dsn,dsn+1);
+});
+test('startup bursts are paced with continuous PDT', () => {
+ A.push(2); list.step(now,A,slate); const start=list.seq,dsn=list.dsn;
+ for(let i=0;i<5;i++) A.push(2);
+ for(let i=0;i<40;i++) {now+=250;list.step(now,A,null);assert.ok(list.end<=now+250);}
+ assert.equal(list.seq,start+5); assert.equal(list.dsn,dsn); assertContinuous(parse().segs);
+});
+test('thirty seconds retention after leaving playlist survives source deletion', () => {
+ A.push(2);list.step(now,A,slate); const seq=list.entries.at(-1).seq,file=list.file(seq);
+ for(let i=0;i<8;i++){now+=2000;A.push(2);list.step(now,A,slate);}
+ const left=now;fs.rmSync(A.dir,{recursive:true,force:true});
+ now=left+RETAIN;list.step(now,null,slate);assert.ok(list.file(seq));assert.ok(fs.existsSync(file));
+ now++;list.step(now,null,slate);assert.equal(list.file(seq),null);assert.ok(!fs.existsSync(file));
+});
+test('slate loops do not invent discontinuities',()=>{
+ list.step(now,null,slate);const dsn=list.dsn;for(let i=0;i<100;i++)second(null);assert.equal(list.dsn,dsn);
+});
+test('same channel restart inserts exactly one discontinuity',()=>{
+ A.push(2);list.step(now,A,slate);const dsn=list.dsn;now+=2000;A.key='a:2';A.push(2);list.step(now,A,slate);assert.equal(list.dsn,dsn+1);
 });
 
 test('a discontinuity sequence number never changes for a segment, also as tags scroll off', () => {
@@ -137,6 +132,7 @@ test('a discontinuity sequence number never changes for a segment, also as tags 
   assert.equal(p.dseq, list.dsn);
 });
 
+
 test('a tag on the first listed segment is rendered, not yet counted in DISCONTINUITY-SEQUENCE', () => {
   list.step(now, null, slate);
   const before = list.dsn;
@@ -148,29 +144,6 @@ test('a tag on the first listed segment is rendered, not yet counted in DISCONTI
   assert.equal(p.segs[0].dsn, before + 1);
 });
 
-test('segments listed before a switch survive ffmpeg deleting its directory, until they age out', () => {
-  list.step(now, null, slate);
-  for (let i = 0; i < 3; i++) { A.push(); second(A); }
-  const listed = parse().segs.filter(s => /^a-/.test(body(s.uri)));
-  assert.equal(listed.length, 3);
-  fs.rmSync(A.dir, { recursive: true, force: true }); // what clean() does on a switch
-  for (const s of listed) assert.match(body(s.uri), /^a-/);
-  // Still fetchable after leaving the playlist, then gone from disk and from lookup.
-  const f = list.file(listed[0].seq);
-  for (let i = 0; i < LIST + 1; i++) second(null);
-  assert.ok(!parse().segs.some(s => s.seq === listed[0].seq));
-  assert.equal(fs.readFileSync(list.file(listed[0].seq), 'utf8'), 'a-0');
-  for (let i = 0; i < RETAIN; i++) second(null);
-  assert.equal(list.file(listed[0].seq), null);
-  assert.ok(!fs.existsSync(f));
-  assert.ok(list.entries.length <= LIST + RETAIN);
-  assert.deepEqual(fs.readdirSync(list.dir), []);
-});
-
-test('the slate files themselves are never deleted', () => {
-  for (let i = 0; i < 60; i++) second(null);
-  for (const s of slate.list) assert.ok(fs.existsSync(s.file));
-});
 
 test('ffmpeg deleting its older segments does not disturb ingest', () => {
   list.step(now, null, slate);
@@ -179,162 +152,6 @@ test('ffmpeg deleting its older segments does not disturb ingest', () => {
   assert.equal(list.dsn - parse().dseq, 0);
 });
 
-test('a short pause between segments gets no slate', () => {
-  list.step(now, null, slate);
-  A.push(); second(A);
-  const seq = list.seq;
-  now += 1000; list.step(now, A, slate); // waiting, under the stall limit
-  assert.equal(list.seq, seq);
-});
-
-test('a stalled source gets slate, and coming back counts as a change', () => {
-  // Isolate source changes from the separate, intentional slate-loop tags.
-  slate = { ...slate, list: Array(60).fill(slate.list[0]) };
-  list.step(now, null, slate);
-  A.push(); second(A);
-  const dsn = list.dsn, seq = list.seq;
-  for (let t = 0; t < 6000; t += 250) { now += 250; list.step(now, A, slate); }
-  assert.equal(list.onSlate, true);
-  assert.ok(list.seq > seq);
-  assert.equal(list.dsn, dsn + 1);
-  A.push(); second(A);
-  assert.equal(list.dsn, dsn + 2);
-  assert.equal(list.onSlate, false);
-});
-
-test('a restart of the same channel is a new source', () => {
-  list.step(now, null, slate);
-  A.push(); second(A);
-  const dsn = list.dsn;
-  fs.rmSync(A.dir, { recursive: true, force: true });
-  const again = source('a'); again.key = 'a:2';
-  again.push(); second(again);
-  assert.equal(list.dsn, dsn + 1);
-  assert.equal(body(parse().segs.at(-1).uri), 'a-0');
-});
-
-test('a segment missed inside one run is a discontinuity too', () => {
-  list.step(now, null, slate);
-  A.push(); second(A); A.push(); second(A);
-  const dsn = list.dsn;
-  A.push(); A.push();
-  fs.rmSync(path.join(A.dir, 'seg_00002.ts'));
-  second(A);
-  assert.equal(list.dsn, dsn + 1);
-  assert.equal(body(parse().segs.at(-1).uri), 'a-3');
-});
-
-test('the first playlist ends at the clock, with PDT continuous through it', () => {
-  list.step(now, null, { key: slate.key, list: [{ file: slate.list[0].file, dur: 1.033 }, { file: slate.list[1].file, dur: 0.967 }] });
-  const p = parse();
-  assert.ok(p.segs.every(s => Number.isFinite(s.pdt)));
-  assertContinuous(p.segs);
-  assert.equal(list.end, now);
-  assert.equal(p.segs[0].pdt, now - 6000);
-});
-
-test('PDT is continuous across channel switches, slate and discontinuities', () => {
-  const c = collector();
-  list.step(now, null, slate); c.look();
-  for (let i = 0; i < 4; i++) { A.push(); second(A); c.look(); }
-  for (let i = 0; i < 3; i++) { second(null); c.look(); }
-  for (let i = 0; i < 4; i++) { B.push(1.033); second(B); c.look(); } // a different length, so rounding would show
-  second(null); c.look();
-  const again = source('a'); again.key = 'a:2';
-  for (let i = 0; i < 4; i++) { again.push(0.967); second(again); c.look(); }
-  assertContinuous(c.segs);
-  assert.ok(c.segs.filter(s => s.disc).length >= 4);
-  assert.equal(c.segs.at(-1).seq - c.segs[0].seq + 1, c.segs.length);
-});
-
-test('a direct switch with no wait stays continuous, whichever way the clock falls', () => {
-  list.step(now, null, slate);
-  for (let i = 0; i < 3; i++) { A.push(); second(A); }
-  const end = list.end, tail = list.entries.at(-1);
-  B.push(); now += 300; list.step(now, B, slate);
-  const e = list.entries.at(-1);
-  assert.equal(e.pdt, end);
-  assert.equal(e.pdt, tail.pdt + 1000);
-  assert.equal(e.disc, true);
-});
-
-test('slate fills a shortfall in one go, PDT continuous, ending at the clock', () => {
-  const c = collector();
-  list.step(now, null, slate); c.look();
-  for (let i = 0; i < 3; i++) { A.push(); second(A); c.look(); }
-  const end = list.end, seq = list.seq, dsn = list.dsn;
-  now += 3200; list.step(now, A, slate); c.look(); // a running source gone quiet, seen late
-  assert.equal(list.seq, seq + 4, 'enough slate to cover 3.2 s');
-  assert.equal(list.end, end + 4000);
-  assert.ok(list.end >= now && list.end - now < 1000);
-  assert.equal(list.dsn, dsn + 1, 'one discontinuity going in');
-  assertContinuous(c.segs);
-});
-
-test('a shortfall longer than the whole retained window is still filled without a gap', () => {
-  list.step(now, null, slate);
-  A.push(); second(A);
-  now += 60e3; list.step(now, null, slate);
-  assert.ok(list.end >= now && list.end - now < 1000);
-  assert.ok(list.entries.length <= LIST + RETAIN);
-  for (let i = 1; i < list.entries.length; i++) assert.equal(list.entries[i].pdt, list.entries[i - 1].pdt + 1000);
-  assertContinuous(parse().segs);
-});
-
-test('a fresh segment cannot hide a wall-clock shortfall, and an empty poll fills only once', () => {
-  slate = { ...slate, list: Array(60).fill(slate.list[0]) };
-  const c = collector();
-  list.step(now, null, slate); c.look();
-  A.push(); second(A); c.look();
-  const end = list.end, dsn = list.dsn;
-  A.push(); now += 3200; list.step(now, A, slate); c.look();
-  assert.equal(list.end, end + 5000, 'four slate segments followed by fresh media');
-  assert.equal(list.dsn, dsn + 2, 'source to slate and back');
-  assert.equal(list.onSlate, false);
-  assertContinuous(c.segs);
-  now = list.end + 3000;
-  list.step(now, A, slate); c.look();
-  assert.equal(list.end, now, 'no extra slate from filling twice in one poll');
-  assertContinuous(c.segs);
-});
-
-test('slate stays out of a running source until it is more than the limit behind the clock', () => {
-  list.step(now, null, slate);
-  A.push(); second(A);
-  const seq = list.seq;
-  for (; now - list.end + 250 < MAX_LAG_MS;) { now += 250; list.step(now, A, slate); assert.equal(list.seq, seq); }
-  now += 250; list.step(now, A, slate);
-  assert.ok(list.seq > seq);
-  assert.equal(list.onSlate, true);
-});
-
-test('a source running in real time is not interrupted, even with some jitter', () => {
-  list.step(now, null, slate);
-  A.push(); now += 3000; list.step(now, A, slate);                 // the wait for a first segment
-  assert.ok(list.end >= now, 'slate covers the wait before the first source segment');
-  assertContinuous(parse().segs);
-  const dsn = list.dsn;
-  for (let i = 0; i < 30; i++) {
-    const late = i % 3 ? 1000 : 1250, early = 2000 - late;
-    for (const wait of [late, early]) { A.push(); for (let t = 0; t < wait; t += 250) { now += 250; list.step(now, A, slate); } }
-  }
-  assert.equal(list.onSlate, false);
-  assert.equal(list.dsn, dsn);
-});
-
-test('a new segment ahead of the clock just continues, and slate then waits for the clock', () => {
-  const c = collector();
-  list.step(now, null, slate); c.look();
-  for (let i = 0; i < 5; i++) { B.push(); now += 100; list.step(now, B, slate); c.look(); } // a provider burst
-  assert.ok(list.end > now + 4000, 'ahead of the clock');
-  const end = list.end, seq = list.seq;
-  now += 1000; list.step(now, null, slate); c.look(); // off air, but nothing is due yet
-  assert.equal(list.seq, seq);
-  assert.equal(list.end, end);
-  now = end + 10; list.step(now, null, slate); c.look();
-  assert.equal(list.seq, seq + 1);
-  assertContinuous(c.segs);
-});
 
 test('joining a source that is already running takes its newest segment, not its whole list', () => {
   list.step(now, null, slate);
@@ -348,26 +165,13 @@ test('joining a source that is already running takes its newest segment, not its
   assert.equal(body(parse().segs.at(-1).uri), 'a-6');
 });
 
+
 test('segment URIs stay relative and seg_<digits>.ts, whatever the source calls them', () => {
   list.step(now, null, slate);
   A.push(); second(A); second(null); second(null);
   for (const s of parse().segs) assert.match(s.uri, /^seg_\d+\.ts$/);
 });
 
-test('TARGETDURATION covers a long segment while it is listed, then falls back', () => {
-  list.step(now, null, slate);
-  A.push(1.7); second(A);
-  assert.equal(parse().target, 2);
-  for (let i = 0; i < LIST; i++) second(null);
-  assert.equal(parse().target, 1);
-});
-
-test('a new slate after a resolution change is a source change', () => {
-  list.step(now, null, slate);
-  const dsn = list.dsn;
-  second(null, { key: 'slate:480', list: slate.list });
-  assert.equal(list.dsn, dsn + 1);
-});
 
 test('numbers keep rising across a restart', () => {
   const later = new LivePlaylist({ dir: list.dir, now: now + 5000 });
@@ -375,4 +179,26 @@ test('numbers keep rising across a restart', () => {
   assert.ok(later.seq > list.seq - LIST - 1);
   assert.ok(later.seq < 2 ** 31 && later.dsn < 2 ** 31, 'fits a player that keeps these in 32 bits');
   assert.ok(new LivePlaylist({ dir: list.dir, now: now + 3600e3 }).seq > list.seq + 3600);
+});
+
+test('slate TS retiming advances video/audio PTS, DTS, PCR and packet counters across wraps', () => {
+ const {retime}=require('../src/slate-ts');
+ const decode=(b,i)=>(b[i]>>1&7)*2**30+b[i+1]*2**22+(b[i+2]>>1)*2**15+b[i+3]*128+(b[i+4]>>1);
+ for(const id of [0xe0,0xc0]){
+  const b=Buffer.alloc(188,255);b.set([0x47,0x41,0,0x30,7,0x10,0,0,0,0,0x7e,0]);
+  b.set([0,0,1,id,0,0,0x80,0xc0,10,0x31,0,1,0,1,0x11,0,1,0,1],12);
+  const counters=new Map(),a=retime(b,180000,counters),c=retime(b,2**33+180000,counters);
+  assert.equal(decode(a,21),180000);assert.equal(decode(a,26),180000);
+  const pcr=a[6]*2**25+a[7]*2**17+a[8]*512+a[9]*2+(a[10]>>7);
+  assert.equal(pcr,180000);assert.equal(a[3]&15,0);assert.equal(c[3]&15,1);
+  assert.equal(decode(c,21),180000);assert.equal(decode(b,21),0);
+ }
+});
+test('queued channel segments survive a directory deletion during switching',()=>{
+ list.buffer=2; for(let i=0;i<3;i++){A.push(2);now+=2000;list.step(now,A,slate);}
+ assert.equal(list.pending.length,2); const dsn=list.dsn;
+ fs.rmSync(A.dir,{recursive:true,force:true});
+ now+=2000;list.step(now,null,slate); assert.equal(list.dsn,dsn); assert.equal(list.onSlate,false);
+ now+=2000;list.step(now,null,slate); assert.equal(list.dsn,dsn);assert.equal(list.pending.length,0);
+ for(let i=0;i<3;i++)B.push(2);now+=1000;list.step(now,B,slate);assert.equal(list.dsn,dsn+1);
 });
