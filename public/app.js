@@ -464,9 +464,9 @@ async function renderSports() {
     for (const team of [game.away,game.home]) {
      const line=document.createElement('div'), star=document.createElement('button');star.className='ghost';star.textContent=sportsTeams.includes(team)?'★':'☆';star.setAttribute('aria-label','Favorite '+team);star.setAttribute('aria-pressed',String(sportsTeams.includes(team)));star.onclick=async()=>{star.disabled=true;try {const next=sportsTeams.includes(team)?sportsTeams.filter(t=>t!==team):[...sportsTeams,team];const r=await fetch(B+'/api/sports/teams',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});if(!r.ok)throw Error('Could not save favorites');await renderSports();}catch(e){toast(e.message);}finally{star.disabled=false;}};line.append(star,document.createTextNode(team));row.append(line);
     }
-    const detail=document.createElement('p');detail.className='dim';detail.textContent=game.startLocal+' CT · '+game.status+(game.score?' · '+game.score:'');row.append(detail);
+    const score=game.scores?.away?.score!=null&&game.scores?.home?.score!=null?game.scores.away.abbr+' '+game.scores.away.score+' @ '+game.scores.home.abbr+' '+game.scores.home.score:game.score;const detail=document.createElement('p');detail.className='dim';detail.textContent=game.startLocal+' CT · '+game.status+(score?' · '+score:'');row.append(detail);
     if(game.notFound){const text=document.createElement('small');text.textContent='Channel not found';row.append(text);}
-    for(const c of game.channels){const b=document.createElement('button');b.className='ghost';b.textContent=c.name;b.onclick=()=>pick(c.id,c.name);row.append(b);}root.append(row);
+    for(const c of game.channels){const b=document.createElement('button');b.className='ghost';b.textContent=c.name;const note=document.createElement('small');note.style.display='block';note.className='dim';note.textContent=c.reason+(c.programme?' · '+c.programme:'');b.append(note);b.onclick=()=>pick(c.id,c.name);row.append(b);}root.append(row);
    }
   }
  } catch(e) {toast(e.message);} finally {sportsBusy=false;}
