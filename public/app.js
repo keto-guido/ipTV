@@ -259,7 +259,7 @@ function show(v, opt = {}) {
   if (v === 'sports') renderSports();
   $('v-watch').hidden = v !== 'watch'; $('v-list').hidden = v !== 'groups' && v !== 'group'; $('v-manage').hidden = v !== 'manage'; $('v-guide').hidden = v !== 'guide';
   document.body.classList.toggle('mini', v !== 'watch'); for (const t of tiles.values()) t.video.controls = false;
-  for (const b of document.querySelectorAll('.tabs [data-go]')) b.classList.toggle('on', b.dataset.go === (v === 'group' ? (cur && cur.cat === '*' ? 'favs' : 'groups') : v === 'manage' ? 'groups' : v));
+  for (const b of document.querySelectorAll('.tabs [data-go]')) { const active = b.dataset.go === (v === 'group' ? (cur && cur.cat === '*' ? 'favs' : 'groups') : v === 'manage' ? 'groups' : v); b.classList.toggle('on', active); b.setAttribute('aria-current', active ? 'page' : 'false'); }
   $('back').hidden = !(v === 'group' && cur.cat !== '*') && v !== 'manage';
   $('tool').hidden = v !== 'groups'; $('tool').textContent = 'Edit';
   $('title').textContent = v === 'watch' ? 'TV' : v === 'groups' ? 'Groups' : v === 'manage' ? 'Show groups' : v === 'guide' ? 'Guide' : v === 'sports' ? 'Sports' : cur.name;
