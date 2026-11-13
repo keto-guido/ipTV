@@ -149,6 +149,12 @@ test('live requests on a stopped channel change nothing: no activity, no start',
   const status = async () => (await (await get('/api/status', jwt({ roles: ['tv'], sub: 'watcher' }))).json());
   const was = await status(), who = jwt({ roles: ['tv'], sub: 'live-viewer' });
   assert.deepEqual(was.live, { id: ID, name: 'Test', slate: true, switchedAt: null, switchSeq: null, switchPdt: null });
+  for (const rendition of ['phone', 'tv']) {
+    const res = await get(`/hls/live/${rendition}/index.m3u8`, who);
+    assert.equal(res.status, 200);
+    await res.text();
+    assert.equal((await status()).channels[0].status, 'idle');
+  }
   const text = await (await get('/hls/live/phone/index.m3u8', who)).text();
   assert.equal((await get(`/hls/live/phone/${firstSeg(text)}`, who)).status, 200);
   const now = await status();

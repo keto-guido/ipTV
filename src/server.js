@@ -167,12 +167,13 @@ async function handle(req, res) {
   let mm;
   // Constant live playlists. Must stay ahead of the per-channel route, which would take "live" for a channel id.
   if (m === 'GET' && (mm = p.match(/^\/hls\/live\/(phone|tv)\/(?:index\.m3u8|seg_(\d{1,15})\.ts)$/))) {
+    // Playlist polls (including starting responses) and segments count as viewer activity.
+    // keepalive only extends a running upstream; it never wakes or starts a stopped channel.
+    const cur = ch.liveChannel();
+    if (cur) ch.keepalive(cur.id, user.sub);
     if (mm[2]) {
-      const f = live.segment(mm[1], mm[2]), cur = ch.liveChannel();
+      const f = live.segment(mm[1], mm[2]);
       if (!f) return send(res, 404, { error: 'not found' });
-      // A segment means someone is watching; playlists are also polled with nobody there. keepalive, not touch: a fresh
-      // lastAccess on a stopped channel would let pump() start it, and live requests never start a stream.
-      if (cur) ch.keepalive(cur.id, user.sub);
       return file(res, f, 'private, max-age=60');
     }
     const list = live.playlist(mm[1]);

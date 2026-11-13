@@ -114,6 +114,7 @@ function start(c) {
   c.run = (c.run || 0) + 1;
   c.status = 'starting'; c.startedAt = Date.now(); c.stopping = false; c.err = ''; c.reason = undefined;
   c.lastAccess = Date.now();
+  c.lastViewerAt = null; c.runViewers = new Set();
   log(`start ${c.id} (${c.name}) ${encoder} ${settings.resolution}p${c.tv ? ' + tv 1080p' : ''}`);
   const p = spawn(cfg.FFMPEG, ffArgs(c.id, out, c.tv), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
   c.proc = p;
@@ -199,6 +200,20 @@ function view(c) {
     retryIn: c.status === 'backoff' ? Math.ceil((c.retryAt - now) / 1000) : undefined, reason: c.status === 'down' || c.status === 'backoff' ? c.reason : undefined };
 }
 
+// Diagnostics are per ffmpeg run; lastAccess also includes the startup grace period.
+function viewerActivity(c, who) {
+  if (!c.proc) return;
+  const now = Date.now(), previous = c.lastViewerAt;
+  c.lastViewerAt = now;
+  c.runViewers.add(who);
+  if (previous === null || now - previous > 60e3) {
+    let active = 0;
+    for (const t of c.viewers.values()) if (now - t < 30e3) active++;
+    const label = redact(String(who)).replace(/[\r\n\t]/g, ' ');
+    log(`viewers ${c.id}: activity from ${label} (${active} active)`);
+  }
+}
+
 function make(id, name) {
   return { id: String(id), name: name || String(id), status: 'idle', proc: null, failures: 0, loops: [], lastAccess: 0, viewers: new Map() };
 }
@@ -220,7 +235,7 @@ module.exports = {
     setInterval(() => {
       const now = Date.now();
       for (const c of chans.values()) {
-        if (c.proc && now - c.lastAccess > settings.idleSec * 1000) { log(`idle stop ${c.id}`); kill(c).then(() => clean(c.id)); }
+        if (c.proc && now - c.lastAccess > settings.idleSec * 1000) { log(`idle stop ${c.id} (no viewer activity for ${Math.round((now - (c.lastViewerAt ?? c.startedAt)) / 1000)}s; idleSec ${settings.idleSec}; ran ${Math.round((now - c.startedAt) / 1000)}s; viewers seen this run: ${c.runViewers.size})`); kill(c).then(() => clean(c.id)); }
       }
     }, 15e3).unref();
   },
@@ -282,6 +297,7 @@ module.exports = {
       c.wanted = true;
       if (!c.proc && c.status === 'idle' && Date.now() - (c.startedAt || 0) > WAKE_DEBOUNCE_MS) start(c);
     }
+    viewerActivity(c, who);
     return view(c);
   },
   // Heartbeat: extends the idle timer of a running upstream. On anything else it changes nothing, because a fresh
@@ -289,7 +305,7 @@ module.exports = {
   keepalive(id, who) {
     const c = chans.get(String(id));
     if (!c) return null;
-    if (c.proc) { c.lastAccess = Date.now(); c.viewers.set(who, Date.now()); }
+    if (c.proc) { c.lastAccess = Date.now(); c.viewers.set(who, Date.now()); viewerActivity(c, who); }
     return view(c);
   },
   setSettings(s) {
