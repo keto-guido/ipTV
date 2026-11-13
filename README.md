@@ -161,3 +161,7 @@ The Sports tab shows today's ESPN games in Chicago time: Live now, Later, and Fi
 `sportsListRefresh` (default true; set false in `data/settings.json` to disable) runs provider list refreshes at 06:00, 12:00, and 17:00 America/Chicago. It skips active streams and concurrent refreshes, and uses the existing rate-limited refresh path. Sports itself never starts a stream. Run the lightweight feature tests with `node --test test/sports.test.js`.
 
 Sports matching checks run with `npm test` (mocked ESPN, no encoder processes). Media integration tests are separate under `npm run test:media`.
+
+## McKinley Screen
+
+Share McKinley's whole desktop through the live relay. Enable **McKinley Screen** in Admin, then select it or use `scripts\screen-start.cmd`; use `scripts\screen-stop.cmd` to stop. Enabling alone never starts capture. It does not use the provider stream cap. Audio is silent AAC until a Stereo Mix or other loopback device exists (microphones are never used). Viewing is LAN-only on a best-effort basis: a reverse proxy must forward client IP headers to distinguish WAN viewers. Deployment requires Eric's approval.
