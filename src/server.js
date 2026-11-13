@@ -7,6 +7,8 @@ const { cfg, log, redact } = require('./config');
 const { userFor } = require('./auth');
 const provider = require('./provider');
 const ch = require('./channels');
+const screen = require('./screen');
+const localChannel = { id: screen.ID, name: screen.NAME, cat: 'local' };
 const epg = require('./epg');
 const live = require('./live');
 const { createHub } = require('./events');
@@ -65,9 +67,11 @@ function iso(t) {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}${z}`;
 }
 function nowPlaying() {
-  const l = provider.load(), cats = new Map(((l && l.categories) || []).map(c => [c.id, c.name]));
+  const selected = ch.list();
+  const l = selected.some(c => !screen.isScreen(c.id)) ? provider.load() : null, cats = new Map(((l && l.categories) || []).map(c => [c.id, c.name]));
   const t = Date.now() / 1000;
-  const chans = ch.list().filter(c => c.status !== 'down').map(c => {
+  const chans = selected.filter(c => screen.isScreen(c.id) || c.status !== 'down').map(c => {
+    if (screen.isScreen(c.id)) return screen.nowPlaying(c);
     const meta = provider.channel(c.id) || {}, rid = provider.repOf(c.id);
     const e = epg.nowNext([rid])[rid] || epg.nowNext([c.id])[c.id] || [];
     const [a, b] = e;
@@ -79,14 +83,15 @@ function nowPlaying() {
     };
   });
   const updatedAt = iso(t), cap = ch.settings.maxStreams;
-  const p = chans.find(c => c.playing) || chans[0];
+  const p = chans.find(c => c.id === ch.liveChannel()?.id) || chans.find(c => c.playing) || chans[0];
   if (!p) return { playing: false, updatedAt, cap, channels: [] };
   const { now, next, viewers, state } = p;
-  return { playing: chans.some(c => c.playing), channel: { id: p.id, name: p.name, logo: p.logo, group: p.group }, now, next, viewers, state, updatedAt, cap, channels: chans };
+  return { playing: !!p.playing, channel: { id: p.id, name: p.name, logo: p.logo, group: p.group }, now, next, viewers, state, updatedAt, cap, channels: chans };
 }
 // Logos: fetched once on demand from the channel's icon URL, cached in memory (and on disk), never exposing the source URL.
 const LOGO_DIR = path.join(cfg.DATA, 'logos'), logoMem = new Map(), logoBusy = new Map();
 async function logo(id) {
+  if (screen.isScreen(id)) return null;
   if (logoMem.has(id)) return logoMem.get(id);
   const f = path.join(LOGO_DIR, id);
   try { const j = JSON.parse(fs.readFileSync(f + '.json', 'utf8')); const v = j.none ? null : { type: j.type, buf: fs.readFileSync(f) }; logoMem.set(id, v); return v; } catch {}
@@ -147,7 +152,9 @@ async function handle(req, res) {
 
   const isHtml = p === '/' || p === '/admin' || p === '/guide';
   const user = userFor(req);
-  if (!user || !user.watch) {
+  const screenAction = req.method === 'POST' && /^\/api\/screen\/(start|stop)$/.test(p);
+  const localScreen = screenAction && screen.isLoopback(req) && !req.headers['x-forwarded-for'] && !req.headers['x-real-ip']; // scripts on McKinley only, never a proxied request
+  if (!localScreen && (!user || !user.watch)) {
     if (isHtml && !user) return send(res, 302, '', 'text/plain', { Location: `${cfg.LOGIN_PATH}?next=${encodeURIComponent(req.url)}` });
     return send(res, user ? 403 : 401, { error: user ? 'forbidden' : 'unauthorized' });
   }
@@ -156,6 +163,13 @@ async function handle(req, res) {
     // CSRF: JSON only, no cross-site.
     if (!(req.headers['content-type'] || '').startsWith('application/json') || req.headers['sec-fetch-site'] === 'cross-site')
       return send(res, 403, { error: 'forbidden' });
+  }
+
+  if (screenAction) {
+    if (!localScreen && !user.admin) return send(res, 403, { error: 'forbidden' });
+    if (p.endsWith('/stop')) { await ch.stop(screen.ID); return send(res, 200, { ok: true }); }
+    const r = ch.select(screen.ID);
+    return send(res, r.error ? 409 : 200, r);
   }
 
   if (m === 'GET' && p === '/') return send(res, 200, page('index.html'), TYPES['.html']);
@@ -167,6 +181,7 @@ async function handle(req, res) {
   let mm;
   // Constant live playlists. Must stay ahead of the per-channel route, which would take "live" for a channel id.
   if (m === 'GET' && (mm = p.match(/^\/hls\/live\/(phone|tv)\/(?:index\.m3u8|seg_(\d{1,15})\.ts)$/))) {
+    if (screen.isScreen(ch.liveChannel()?.id) && !screen.isLan(req)) return send(res, 403, { error: 'LAN only' });
     if (mm[2]) {
       const f = live.segment(mm[1], mm[2]), cur = ch.liveChannel();
       if (!f) return send(res, 404, { error: 'not found' });
@@ -179,6 +194,7 @@ async function handle(req, res) {
     return list ? send(res, 200, list, TYPES['.m3u8']) : send(res, 503, { error: 'starting' }, 'application/json', { 'Retry-After': '1' });
   }
   if (m === 'GET' && (mm = p.match(/^\/hls\/([0-9A-Za-z_-]+)\/((?:tv\/)?(?:index\.m3u8|seg_\d+\.ts))$/))) {
+    if (screen.isScreen(mm[1]) && !screen.isLan(req)) return send(res, 403, { error: 'LAN only' });
     if (mm[2].endsWith('index.m3u8') && (ch.has(mm[1]) || liveAliases.has(mm[1]))) {
       liveAliases.add(mm[1]);
       const rendition = mm[2].startsWith('tv/') ? 'tv' : 'phone';
@@ -195,7 +211,7 @@ async function handle(req, res) {
   }
   if (m === 'GET' && p === '/api/events') { if (!hub.add(req, res, user)) send(res, 429, { error: 'too many streams' }); return; }
   if (m === 'GET' && p === '/api/status')
-    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, live: liveState(), channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
+    return send(res, 200, { me: { name: user.name, admin: user.admin }, max: ch.settings.maxStreams, screen: ch.screen(), live: liveState(), channels: ch.list().map(c => ({ ...c, rep: provider.repOf(c.id) })) });
   if (m === 'GET' && p === '/guide') return send(res, 200, page('guide.html'), TYPES['.html']);
   if (m === 'GET' && p === '/api/sports/today') return send(res, 200, await sports.today(user.sub));
   if (m === 'GET' && p === '/api/sports/teams') return send(res, 200, sports.teams(user.sub));
@@ -237,12 +253,12 @@ async function handle(req, res) {
     return send(res, 200, { hidden: hid[user.sub].length });
   }
   if (m === 'GET' && p === '/api/browse') {
-    const l = provider.load(); if (!l) return send(res, 200, { total: 0, items: [] });
+    const l = provider.load() || { channels: [] };
     const q = (url.searchParams.get('q') || '').trim().toLowerCase().slice(0, 100), cat = url.searchParams.get('cat') || '';
     const off = Math.max(0, +url.searchParams.get('offset') || 0), lim = Math.max(1, Math.min(100, +url.searchParams.get('limit') || 60));
     const h = new Set(hid[user.sub] || []), fav = new Set((favs[user.sub] || []).map(provider.repOf));
     const items = []; let total = 0;
-    for (const c of l.channels) {
+    for (const c of [localChannel, ...l.channels]) {
       if (cat === '*') { if (!fav.has(c.id)) continue; } // favorites stay visible even in hidden groups
       else if (h.has(c.cat) || (cat && c.cat !== cat)) continue;
       if (q && !c.name.toLowerCase().includes(q)) continue;
@@ -280,7 +296,7 @@ async function handle(req, res) {
     const q = (url.searchParams.get('q') || '').trim().toLowerCase(), cat = url.searchParams.get('cat') || '';
     const off = Math.max(0, +url.searchParams.get('offset') || 0), lim = Math.min(200, +url.searchParams.get('limit') || 100);
     const fav = new Set((favs[user.sub] || []).map(provider.repOf));
-    const hit = l.channels.filter(c => (cat === '*' ? fav.has(c.id) : !cat || c.cat === cat) && (!q || c.name.toLowerCase().includes(q)));
+    const hit = [localChannel, ...l.channels].filter(c => (cat === '*' ? fav.has(c.id) : !cat || c.cat === cat) && (!q || c.name.toLowerCase().includes(q)));
     return gz(req, res, { total: hit.length, fetchedAt: l.fetchedAt, count: l.channels.length, items: hit.slice(off, off + lim).map(slim) });
   }
   if (m === 'GET' && (mm = p.match(/^\/api\/versions\/([0-9A-Za-z_-]+)$/))) return send(res, 200, provider.alts(mm[1]));
@@ -309,7 +325,7 @@ async function handle(req, res) {
   return send(res, 404, { error: 'not found' });
 }
 
-epg.setExtra(() => [...Object.values(favs).flat(), ...ch.list().map(c => c.id)].map(provider.repOf));
+epg.setExtra(() => [...Object.values(favs).flat(), ...ch.list().filter(c => !screen.isScreen(c.id)).map(c => c.id)].map(provider.repOf));
 ch.init();
 epg.init();
 live.init();
@@ -318,7 +334,7 @@ setInterval(require('./sports/schedule').createCheck({provider, channels: ch, ep
 
 const snapshot = () => {
   const cur = ch.liveChannel();
-  return { live: liveState(), channels: ch.list().map(({ id, name, status, ready, tv, reason }) => ({ id, name, status, ready, tv, reason })) };
+  return { screen: ch.screen(), live: liveState(), channels: ch.list().map(({ id, name, status, ready, tv, reason }) => ({ id, name, status, ready, tv, reason })) };
 };
 hub.publish(snapshot());
 setInterval(() => hub.publish(snapshot()), 500).unref();

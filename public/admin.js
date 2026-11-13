@@ -3,6 +3,7 @@ const msg = t => { $('info').textContent = t; };
 
 async function status() {
   const s = await api('/api/status');
+  $('screenStatus').textContent = s.screen?.status || 'unavailable';
   const e = await nowNext(s.channels.map(c => c.id)).catch(() => ({}));
   $('active').innerHTML = s.channels.map(c => `<div class="card"><span class="n"><span>${esc(c.name)}</span><span class="sub">${nn(e[c.id])}</span></span>
    <span class="dim">${c.viewers ? '👁 ' + c.viewers : ''}</span><span class="st ${c.status}" title="${esc(c.reason)}">${c.status}${c.retryIn ? ' ' + c.retryIn + 's' : ''}</span>
@@ -55,3 +56,7 @@ for (const k of ['maxStreams', 'resolution', 'idleSec']) $(k).onchange = () => a
 api('/api/settings').then(s => { for (const k of ['maxStreams', 'resolution', 'idleSec']) $(k).value = s[k]; $('enc').textContent = s.encoder === 'h264_nvenc' ? 'NVENC' : 'x264'; });
 api('/api/epg/info').then(i => { $('epgRefresh').title = i.fetchedAt ? 'Guide ' + new Date(i.fetchedAt).toLocaleString() : 'Guide'; });
 loadFavs().catch(() => {}).then(load); status(); setInterval(status, 4000);
+
+$('mckinleyScreen').onchange = async () => { try { await api('/api/settings', { mckinleyScreen: $('mckinleyScreen').checked }); status(); } catch (e) { msg(e.message); } };
+api('/api/settings').then(s => { $('mckinleyScreen').checked = s.mckinleyScreen === true; });
+for (const action of ['Start', 'Stop']) $('screen' + action).onclick = async () => { try { await api('/api/screen/' + action.toLowerCase(), {}); status(); } catch (e) { msg(e.message); } };

@@ -4,10 +4,11 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { cfg, log, redact } = require('./config');
 const provider = require('./provider');
+const screen = require('./screen');
 
 const SETTINGS_FILE = path.join(cfg.DATA, 'settings.json');
 const STATE_FILE = path.join(cfg.DATA, 'state.json');
-const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true, sportsListRefresh: true };
+const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true, sportsListRefresh: true, mckinleyScreen: false };
 const WAKE_DEBOUNCE_MS = 30e3;
 const BACKOFF_BASE = 5e3, BACKOFF_MAX = 300e3, RETRY_CAP = 6, STABLE_MS = 60e3;
 const REFUSED_RETRY_CAP = 3; // a 403 is retried far less patiently than a dropped connection
@@ -72,9 +73,9 @@ function saveState() {
 function dirOf(id) { return path.join(cfg.HLS, String(id).replace(/[^0-9A-Za-z_-]/g, '')); }
 function clean(id) { try { fs.rmSync(dirOf(id), { recursive: true, force: true }); } catch {} }
 
-function liveCh() { return chans.get(liveId) || [...chans.values()].pop() || null; }
+function liveCh() { return chans.get(liveId) || (screen.isScreen(liveId) ? null : [...chans.values()].pop()) || null; }
 
-function busy() { return [...chans.values()].filter(c => c.proc || c.status === 'backoff').length; }
+function busy() { return [...chans.values()].filter(c => !screen.isScreen(c.id) && (c.proc || c.status === 'backoff')).length; }
 
 function ffArgs(id, out, tv) {
   const h = settings.resolution === 480 ? 480 : 720;
@@ -107,7 +108,16 @@ function ffArgs(id, out, tv) {
 
 function start(c) {
   if (c.proc || c.status === 'down' || c.status === 'backoff') return false;
-  if (busy() >= settings.maxStreams) { c.status = 'idle'; return false; }
+  if (screen.isScreen(c.id)) {
+    if (!settings.mckinleyScreen) { c.status = 'down'; c.reason = 'unavailable'; return false; }
+    if (!screen.result()) {
+      c.status = 'probing';
+      screen.init(cfg.FFMPEG, log).then(() => { if (chans.get(c.id) === c && c.wanted && c.status === 'probing') { c.status = 'idle'; start(c); } });
+      return false;
+    }
+    if (!screen.result().grab) { c.status = 'down'; c.reason = 'capture unavailable'; return false; }
+  }
+  if (!screen.isScreen(c.id) && busy() >= settings.maxStreams) { c.status = 'idle'; return false; }
   const out = dirOf(c.id);
   c.tv = tvOn();
   clean(c.id); fs.mkdirSync(c.tv ? path.join(out, 'tv') : out, { recursive: true });
@@ -115,7 +125,7 @@ function start(c) {
   c.status = 'starting'; c.startedAt = Date.now(); c.stopping = false; c.err = ''; c.reason = undefined;
   c.lastAccess = Date.now();
   log(`start ${c.id} (${c.name}) ${encoder} ${settings.resolution}p${c.tv ? ' + tv 1080p' : ''}`);
-  const p = spawn(cfg.FFMPEG, ffArgs(c.id, out, c.tv), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+  const p = spawn(cfg.FFMPEG, screen.isScreen(c.id) ? screen.ffArgs({ encoder, tv: c.tv, out, height: settings.resolution, ...screen.result() }) : ffArgs(c.id, out, c.tv), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
   c.proc = p;
   p.stderr.on('data', d => {
     const s = redact(d.toString()).trim();
@@ -123,7 +133,7 @@ function start(c) {
     c.err = (c.err + '\n' + s).slice(-2000);
     log(`ffmpeg ${c.id}: ${s.split('\n').slice(-3).join(' | ')}`);
   });
-  p.on('error', e => log(`ffmpeg ${c.id} spawn error: ${e.message}`));
+  p.on('error', e => { log(`ffmpeg ${c.id} spawn error: ${e.message}`); if (screen.isScreen(c.id)) onExit(c, p, null); });
   p.on('exit', code => onExit(c, p, code));
   return true;
 }
@@ -139,7 +149,7 @@ function onExit(c, p, code) {
   const segments = fs.existsSync(path.join(dirOf(c.id), 'index.m3u8')); // written once the first segment is complete
   const now = Date.now();
   c.loops = c.loops.filter(t => now - t < LOOP_WINDOW_MS);
-  const r = classifyExit({ err: c.err, segments, wasLive: c.wasLive, ranMs: ran, failures: c.failures, loops: c.loops.length });
+  const r = (screen.isScreen(c.id) ? screen.classifyExit : classifyExit)({ err: c.err, segments, wasLive: c.wasLive, ranMs: ran, failures: c.failures, loops: c.loops.length });
   c.wasLive = c.wasLive || segments; c.failures = r.failures; c.reason = r.reason;
   if (r.loop) c.loops.push(now);
   if (r.action === 'down') { c.status = 'down'; log(`down ${c.id}: ${r.reason}`); saveState(); return pump(); }
@@ -154,7 +164,7 @@ function restartIn(c, delay) {
     c.timer = null;
     if (c.status !== 'backoff') return;
     c.status = 'idle';
-    if (Date.now() - c.lastAccess < settings.idleSec * 1000) start(c);
+    if ((screen.isScreen(c.id) && liveId === c.id && settings.mckinleyScreen) || Date.now() - c.lastAccess < settings.idleSec * 1000) start(c);
   }, delay);
 }
 
@@ -195,7 +205,7 @@ function view(c) {
   const now = Date.now();
   let viewers = 0;
   for (const t of c.viewers.values()) if (now - t < 30e3) viewers++;
-  return { id: c.id, name: c.name, status: c.status, ready: !!c.proc && ready, tv: !!c.proc && c.tv, viewers,
+  return { id: c.id, name: c.name, status: c.status, ready: !!c.proc && !c.stopping && ready, tv: !!c.proc && c.tv, viewers,
     retryIn: c.status === 'backoff' ? Math.ceil((c.retryAt - now) / 1000) : undefined, reason: c.status === 'down' || c.status === 'backoff' ? c.reason : undefined };
 }
 
@@ -208,19 +218,30 @@ module.exports = {
   settings,
   ffArgs, // exported for tests
   classifyExit,
+  screenArgs: screen.ffArgs,
+  busy,
+  screen() {
+    const c = chans.get(screen.ID), capture = screen.result();
+    const unavailable = !settings.mckinleyScreen || (capture && !capture.grab);
+    return { id: screen.ID, name: screen.NAME, enabled: settings.mckinleyScreen,
+      status: unavailable ? 'down' : 'idle', ready: false, reason: unavailable ? 'unavailable' : undefined,
+      ...(c && view(c)), ...capture };
+  },
   init() {
     detectEncoder();
+    if (settings.mckinleyScreen) screen.init(cfg.FFMPEG, log);
     const saved = readJson(STATE_FILE, { selected: [] });
     liveId = saved.live || null;
     for (const s of saved.selected || []) {
       const c = make(s.id, s.name); if (s.down) { c.status = 'down'; c.reason = s.reason || 'previously down'; }
+      if (screen.isScreen(c.id)) { c.status = 'down'; c.reason = settings.mckinleyScreen ? 'start required' : 'unavailable'; }
       chans.set(c.id, c);
     }
     try { fs.rmSync(cfg.HLS, { recursive: true, force: true }); } catch {}
     setInterval(() => {
       const now = Date.now();
       for (const c of chans.values()) {
-        if (c.proc && now - c.lastAccess > settings.idleSec * 1000) { log(`idle stop ${c.id}`); kill(c).then(() => clean(c.id)); }
+        if (c.proc && !(screen.isScreen(c.id) && liveId === c.id && settings.mckinleyScreen) && now - c.lastAccess > settings.idleSec * 1000) { log(`idle stop ${c.id}`); kill(c).then(() => clean(c.id)); }
       }
     }, 15e3).unref();
   },
@@ -230,19 +251,21 @@ module.exports = {
   dir: dirOf,
   liveChannel() { const c = incoming || liveCh(); return c && { id: c.id, name: c.name }; },
   // The running output the live playlists should follow; a new key means a new ffmpeg run, so new timestamps.
-  liveSource() { const c = liveCh(); return c && c.proc ? { key: `${c.id}:${c.run}`, dir: dirOf(c.id), tv: !!c.tv } : null; },
+  liveSource() { const c = liveCh(); return c && c.proc && !c.stopping && (!screen.isScreen(c.id) || settings.mckinleyScreen) ? { key: `${c.id}:${c.run}`, dir: dirOf(c.id), tv: !!c.tv } : null; },
   // Admin selects a channel: (re)arms it and starts it now (probe).
   select(id) {
     id = String(id);
+    if (screen.isScreen(id) && !settings.mckinleyScreen) return { error: 'unavailable' };
     let c = chans.get(id);
     if (!c) {
-      if ([...chans.values()].length >= settings.maxStreams) return { error: 'cap reached' };
-      const meta = provider.channel(id);
+      if (!screen.isScreen(id) && [...chans.values()].filter(c => !screen.isScreen(c.id)).length >= settings.maxStreams) return { error: 'cap reached' };
+      const meta = screen.isScreen(id) ? { name: screen.NAME } : provider.channel(id);
       if (!meta) return { error: 'unknown channel' };
       c = make(id, meta.name); chans.set(id, c);
     }
     module.exports.onSwitch({ id: c.id, name: c.name });
     liveId = id;
+    if (!screen.isScreen(id) && chans.has(screen.ID)) module.exports.stop(screen.ID);
     rearm(c);
     return { ok: true, channel: view(c) };
   },
@@ -255,8 +278,9 @@ module.exports = {
   },
   async replace(oldId, id) {
     if (!/^[0-9A-Za-z_-]{1,20}$/.test(id)) return { error: 'bad id' };
-    const meta = provider.channel(id);
+    const meta = screen.isScreen(id) ? { name: screen.NAME } : provider.channel(id);
     if (!meta) return { error: 'unknown channel' };
+    if (screen.isScreen(id) && !settings.mckinleyScreen) return { error: 'unavailable' };
     module.exports.onSwitch({ id, name: meta.name });
     incoming = { id, name: meta.name };
     try { if (oldId && oldId !== id && chans.has(oldId)) await module.exports.stop(oldId); }
@@ -266,6 +290,9 @@ module.exports = {
   async stop(id) {
     const c = chans.get(String(id));
     if (!c) return;
+    c.wanted = false;
+    if (screen.isScreen(c.id)) c.status = 'down';
+    if (liveId === c.id && !screen.isScreen(c.id)) liveId = null;
     chans.delete(c.id);
     saveState();
     await kill(c); clean(c.id); pump();
@@ -278,7 +305,7 @@ module.exports = {
     // Only channels an admin selected exist in `chans`, so a viewer can never open an upstream
     // for anything else. An already-running upstream is never restarted or duplicated (start()
     // bails on c.proc), and restarting an idle-stopped channel is debounced to once per 30s.
-    if (wake) {
+    if (wake && (!screen.isScreen(c.id) || c.wanted)) {
       c.wanted = true;
       if (!c.proc && c.status === 'idle' && Date.now() - (c.startedAt || 0) > WAKE_DEBOUNCE_MS) start(c);
     }
@@ -298,6 +325,13 @@ module.exports = {
     if (s.idleSec != null) settings.idleSec = Math.max(30, Math.min(3600, parseInt(s.idleSec, 10) || 180));
     if (s.sportsListRefresh != null) settings.sportsListRefresh = s.sportsListRefresh === true;
     if (s.tvRendition != null) settings.tvRendition = !!s.tvRendition;
+    if (s.mckinleyScreen != null) {
+      settings.mckinleyScreen = s.mckinleyScreen === true;
+      if (!settings.mckinleyScreen) {
+        const c = chans.get(screen.ID);
+        if (c) { c.wanted = false; c.status = 'down'; c.reason = 'unavailable'; kill(c).then(() => clean(c.id)); }
+      } else screen.init(cfg.FFMPEG, log);
+    }
     writeJson(SETTINGS_FILE, settings);
     return settings;
   },

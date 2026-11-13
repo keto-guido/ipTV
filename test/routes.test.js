@@ -192,3 +192,20 @@ test('/api/events ends when the JWT expires', async () => {
   await r.text(); // returns only when the server closes the stream
   assert.ok(Date.now() / 1000 >= exp - 0.1);
 });
+
+test('screen scripts: loopback bypass is JSON-only and toggle-gated', async () => {
+  const post = (p, json = true, token) => fetch(base + p, { method: 'POST', headers: { ...(json ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Cookie: `msv_session=${token}` } : {}) }, body: '{}' });
+  assert.equal((await post('/api/screen/start', false)).status, 403);
+  const off = await post('/api/screen/start'); assert.equal(off.status, 409); assert.equal((await off.json()).error, 'unavailable');
+  assert.equal((await post('/api/screen/stop')).status, 200);
+  assert.equal((await post('/api/select')).status, 401);
+  const admin = jwt({ roles: ['tv-admin'] });
+  await fetch(base + '/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: `msv_session=${admin}` }, body: JSON.stringify({ mckinleyScreen: true }) });
+  assert.equal((await post('/api/screen/start')).status, 200);
+  const status = await (await get('/api/status', admin)).json();
+  assert.equal(status.screen.enabled, true); assert.equal(status.live.id, 'screen');
+  const np = await (await get('/api/nowplaying', tvUser)).json();
+  assert.equal(np.channel.id, 'screen'); assert.equal(typeof np.state, 'string'); assert.equal(typeof np.playing, 'boolean'); assert.equal(np.cap, 1);
+  assert.equal((await post('/api/screen/stop')).status, 200);
+  const stopped = await (await get('/api/status', admin)).json(); assert.equal(stopped.live, null);
+});
