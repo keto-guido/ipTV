@@ -38,8 +38,14 @@ test('local args retain output codecs, GOP, bitrates and HLS; no provider option
     const opt = k => a[a.indexOf(k) + 1];
     assert.ok(!a.includes('-user_agent')); assert.ok(!a.includes('-rw_timeout')); assert.ok(!a.some(x => /https?:/.test(x)));
     assert.ok(a.includes('anullsrc=r=48000:cl=stereo')); assert.ok(a.includes('1:a:0'));
-    assert.equal(opt('-g'), '60'); assert.equal(opt('-force_key_frames'), 'expr:gte(t,n_forced*1)');
-    assert.equal(opt('-hls_time'), '2'); assert.equal(opt('-hls_list_size'), '8'); assert.equal(opt('-b:v'), height === 720 ? '2200k' : '1200k');
+    assert.equal(opt('-g'), '15'); assert.equal(opt('-force_key_frames'), 'expr:gte(t,n_forced*0.5)');
+    assert.equal(opt('-hls_time'), '0.5'); assert.equal(opt('-hls_list_size'), '4'); assert.equal(opt('-b:v'), height === 720 ? '2200k' : '1200k');
+    assert.equal(opt('-bf'), '0'); assert.equal(opt('-fflags'), 'nobuffer'); assert.equal(opt('-flags'), 'low_delay'); assert.ok(!a.includes('-re'));
+    if (encoder === 'h264_nvenc') {
+      assert.equal(opt('-preset'), 'p1'); assert.equal(opt('-tune'), 'ull'); assert.equal(opt('-rc'), 'cbr');
+      for (const k of ['-rc-lookahead', '-delay']) assert.equal(opt(k), '0');
+      assert.equal(opt('-zerolatency'), '1');
+    }
     assert.ok(a.includes('7000k')); assert.ok(a.includes('160k')); assert.ok(opt('-filter_complex').includes('split=2'));
     if (grab === 'ddagrab') assert.ok(opt('-filter_complex').includes('hwdownload,format=bgra'));
   }
@@ -61,6 +67,7 @@ test('screen starts at provider cap without provider lookup; view supports nowpl
   const v = ch.list().find(c => c.id === 'screen');
   assert.equal(screen.nowPlaying(v).playing, true); assert.equal(screen.nowPlaying(v).state, 'running');
   assert.deepEqual(ch.liveChannel(), { id: 'screen', name: 'McKinley Screen' });
+  assert.equal(ch.liveSource().lowLatency, true);
 });
 test('running screen consumes no provider slot and disabling stops it', async () => {
   await enable(); ch.select('screen'); assert.equal(ch.busy(), 0);

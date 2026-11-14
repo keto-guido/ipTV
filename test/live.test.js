@@ -217,3 +217,35 @@ test('queued channel segments survive a directory deletion during switching',()=
  now+=2000;list.step(now,null,slate); assert.equal(list.dsn,dsn);assert.equal(list.pending.length,0);
  for(let i=0;i<3;i++)B.push(2);now+=1000;list.step(now,B,slate);assert.equal(list.dsn,dsn+1);
 });
+
+test('screen joins at newest half-second segment and publishes without hold-back or pacing', () => {
+  list.buffer = 2; A.lowLatency = true;
+  for (let i = 0; i < 4; i++) A.push(0.5);
+  list.step(now, A, null);
+  assert.equal(list.entries.length, 1);
+  assert.equal(body(parse().segs.at(-1).uri), 'a-3');
+  assert.equal(list.pending.length, 0);
+  // Multiple completed segments in one poll must not acquire startup pacing delay.
+  A.push(0.5); A.push(0.5); A.push(0.5);
+  list.step(now + 250, A, null);
+  assert.equal(list.entries.length, 4);
+  assert.equal(list.pending.length, 0);
+  assertContinuous(parse().segs);
+  assert.equal(parse().target, 2);
+  B.push(2); B.push(2); B.push(2);
+  list.step(now + 2250, B, null);
+  assert.equal(list.pending.length, 2);
+  assert.equal(parse().segs.at(-1).disc, true);
+  assert.equal(parse().target, 2);
+});
+
+test('normal sources retain the configured hold-back', () => {
+  list.buffer = 2;
+  A.push(2); list.step(now, A, null);
+  assert.equal(list.entries.length, 0);
+  A.push(2); list.step(now + 2000, A, null);
+  assert.equal(list.entries.length, 0);
+  A.push(2); list.step(now + 4000, A, null);
+  assert.equal(list.entries.length, 1);
+  assert.equal(list.pending.length, 2);
+});

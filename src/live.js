@@ -69,7 +69,7 @@ function step() {
   const src = ch.liveSource(), now = Date.now();
   // A channel running without the TV output still feeds the TV playlist: 720p beats a black screen.
   lists.phone.step(now, src, slate(ch.settings.resolution === 480 ? 480 : 720));
-  lists.tv.step(now, src && (src.tv ? { key: src.key, dir: path.join(src.dir, 'tv') } : src), slate(1080));
+  lists.tv.step(now, src && (src.tv ? { key: src.key, dir: path.join(src.dir, 'tv'), lowLatency: src.lowLatency } : src), slate(1080));
 }
 
 module.exports = {

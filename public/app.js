@@ -65,15 +65,45 @@ function play(v) {
 }
 function resume() { const t = front(); if (t && t.loaded && t.video.paused) play(t.video); }
 const HLS_CONFIG = { liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.05, backBufferLength: 30, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 };
+// Tune the existing live player only; restore provider defaults on switch-back.
+function tuneLive(t) {
+  if (!t.live) return;
+  const low = !!S.live?.lowLatency;
+  if (t.lowLatency === low) return;
+  t.lowLatency = low; t.catchUp = low;
+  if (!t.hls) return;
+  const c = t.hls.config;
+  if (low) {
+    t.normalBuffer = { maxBufferLength: c.maxBufferLength, maxMaxBufferLength: c.maxMaxBufferLength, backBufferLength: c.backBufferLength };
+    Object.assign(c, { liveSyncDuration: 1, liveMaxLatencyDuration: 3, maxLiveSyncPlaybackRate: 1.15, maxBufferLength: 3, maxMaxBufferLength: 6, backBufferLength: 3 });
+  } else {
+    Object.assign(c, t.normalBuffer, { liveSyncDuration: undefined, liveMaxLatencyDuration: undefined, liveSyncDurationCount: HLS_CONFIG.liveSyncDurationCount, maxLiveSyncPlaybackRate: HLS_CONFIG.maxLiveSyncPlaybackRate });
+  }
+}
+function catchUpLive(t) {
+  if (!t.live || !t.lowLatency || !t.loaded) return;
+  const v = t.video, ranges = v.seekable;
+  if (!ranges || !ranges.length) return;
+  // liveSyncPosition already trails the HLS edge by one second.
+  const sync = t.hls?.liveSyncPosition;
+  const edge = Number.isFinite(sync) ? sync + 1 : ranges.end(ranges.length - 1);
+  if (edge - v.currentTime <= (t.catchUp ? 2.5 : 4)) return;
+  const target = Math.min(edge - 1, ranges.end(ranges.length - 1));
+  if (target < ranges.start(ranges.length - 1)) return;
+  try { v.currentTime = target; t.catchUp = false; } catch {}
+}
 function attach(t) {
   const src = t.live ? `${B}/hls/live/phone/index.m3u8` : `${B}/hls/${t.id}/index.m3u8`;
   t.loaded = true;
+  t.lowLatency = undefined;
+  if (native) tuneLive(t);
   if (native) {
     t.video.onerror = () => reattach(t);
     t.video.onplaying = () => healthy(t);
     t.video.src = src; play(t.video); return;
   }
   const hls = t.hls = new Hls(HLS_CONFIG);
+  tuneLive(t);
   hls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal && t.hls === hls) onFatal(t, d); });
   hls.on(Hls.Events.FRAG_BUFFERED, () => healthy(t));
   hls.on(Hls.Events.FRAG_CHANGED, (_, data) => { if (t.live) { t.fragment = data.frag; checkSwitch(data.frag); } });
@@ -86,7 +116,7 @@ function detach(t) {
   t.video.onerror = t.video.onplaying = null;
   t.video.removeAttribute('src'); t.video.load(); t.loaded = false;
 }
-function healthy(t) { if (t.tries || t.note) { t.tries = 0; t.note = ''; paint(t); } }
+function healthy(t) { if (t.catchUp) catchUpLive(t); if (t.tries || t.note) { t.tries = 0; t.note = ''; paint(t); } }
 // Media errors are fixed in place; a second one within 30 s also swaps the audio codec, a third rebuilds the player.
 function onFatal(t, d) {
   if (d.type !== Hls.ErrorTypes.MEDIA_ERROR) return reattach(t);
@@ -190,6 +220,7 @@ async function refresh() {
   if (document.hidden) return;
   try { S = await api('/api/status'); } catch { return; }
   showSwitch(S.live);
+  tuneLive(main); catchUpLive(main);
   $('cog').hidden = !S.me.admin;
   const live = S.channels; // a down channel keeps its tile, to show why and offer a retry
   const liveId = S.live ? S.live.id : null;
@@ -432,11 +463,12 @@ loadFavs().catch(() => {});
 tick().then(async () => { await loadGroups().catch(() => {}); if (!fromHash(true)) show(tiles.size ? 'watch' : 'groups', { pop: true }); });
 // Status changes arrive by SSE; the slow poll is the fallback, and also carries the /api/watch wake-up.
 setInterval(tick, 20e3);
+setInterval(() => { if (!document.hidden) catchUpLive(main); }, 5e3);
 function listen() {
   if (!window.EventSource) return;
   const es = new EventSource(B + '/api/events'); // same-origin: the session cookie goes along, so no token in the URL
   es.addEventListener('switching', e => { try { showSwitch(JSON.parse(e.data)); } catch {} });
-  es.addEventListener('state', e => { try { showSwitch(JSON.parse(e.data).live); } catch {} tick(); });
+  es.addEventListener('state', e => { try { S.live = JSON.parse(e.data).live; showSwitch(S.live); tuneLive(main); catchUpLive(main); } catch {} tick(); });
   es.onerror = () => { if (es.readyState === EventSource.CLOSED) setTimeout(listen, 30e3); }; // refused; ordinary drops reconnect by themselves
 }
 listen();

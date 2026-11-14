@@ -266,7 +266,7 @@ module.exports = {
   dir: dirOf,
   liveChannel() { const c = incoming || liveCh(); return c && { id: c.id, name: c.name }; },
   // The running output the live playlists should follow; a new key means a new ffmpeg run, so new timestamps.
-  liveSource() { const c = liveCh(); return c && c.proc && !c.stopping && (!screen.isScreen(c.id) || settings.mckinleyScreen) ? { key: `${c.id}:${c.run}`, dir: dirOf(c.id), tv: !!c.tv } : null; },
+  liveSource() { const c = liveCh(); return c && c.proc && !c.stopping && (!screen.isScreen(c.id) || settings.mckinleyScreen) ? { key: `${c.id}:${c.run}`, dir: dirOf(c.id), tv: !!c.tv, ...(screen.isScreen(c.id) ? { lowLatency: true } : {}) } : null; },
   // Admin selects a channel: (re)arms it and starts it now (probe).
   select(id) {
     id = String(id);

@@ -69,12 +69,12 @@ class LivePlaylist {
     if (observed && observed !== this.observed) { this.observed = observed; this.lastInput = now; }
     let got = false;
     // Copy completed input before a switch can delete the channel directory.
-    for (const s of this.last === null ? media.slice(-(this.buffer + 1)) : media) {
+    for (const s of this.last === null ? media.slice(-((src.lowLatency ? 0 : this.buffer) + 1)) : media) {
       if (this.last !== null && s.num <= this.last) continue;
       const file = path.join(this.dir, 'pending_' + this.pendingSeq++ + '.ts');
       if (!keep(path.join(src.dir, s.uri), file)) break;
       this.last = s.num;
-      this.pending.push({ file, dur: s.dur, from: src.key, owned: true });
+      this.pending.push({ file, dur: s.dur, from: src.key, lowLatency: !!src.lowLatency, owned: true });
       got = true;
     }
     return got;
@@ -84,11 +84,11 @@ class LivePlaylist {
     while (this.pending.length) {
       const s = this.pending[0];
       const queued = this.pending.filter(e => e.from === s.from).length;
-      if (s.from === this.key && queued <= this.buffer && now - this.lastInput < MAX_LAG_MS) break;
+      if (s.from === this.key && queued <= (s.lowLatency ? 0 : this.buffer) && now - this.lastInput < MAX_LAG_MS) break;
       const changed = this.from !== s.from;
       if (this.end === null || changed) this.end = now - ms(s.dur);
-      // Pace startup bursts; keep PDT continuous inside each source.
-      if (!changed && this.end + ms(s.dur) > now + 250) break;
+      // Pace startup bursts except screen capture; keep PDT continuous inside each source.
+      if (!s.lowLatency && !changed && this.end + ms(s.dur) > now + 250) break;
       const file = path.join(this.dir, 'seg_' + this.seq + '.ts');
       fs.renameSync(s.file, file);
       this.pending.shift();

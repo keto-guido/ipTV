@@ -56,23 +56,24 @@ function isLan(req) {
   // App Hub sets X-Forwarded-For to the real client; a proxy without it hides WAN clients behind a LAN address (best effort).
   const fwd = h['x-forwarded-for'] || h['x-real-ip'];
   return fwd ? local(normalize(String(fwd).split(',')[0])) : true;
-}function ffArgs({ encoder, tv, out, height = 720, grab = 'gdigrab', audioDevice = null }) {
+}
+function ffArgs({ encoder, tv, out, height = 720, grab = 'gdigrab', audioDevice = null }) {
   const h = height === 480 ? 480 : 720;
   const v = encoder === 'h264_nvenc'
-    ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'cbr']
-    : ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency'];
+    ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-rc', 'cbr', '-bf', '0', '-rc-lookahead', '0', '-delay', '0', '-zerolatency', '1']
+    : ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-bf', '0'];
   const br = h === 720 ? ['-b:v', '2200k', '-maxrate', '2500k', '-bufsize', '4400k'] : ['-b:v', '1200k', '-maxrate', '1400k', '-bufsize', '2400k'];
-  const input = ['-hide_banner', '-nostats', '-loglevel', 'warning',
+  const input = ['-hide_banner', '-nostats', '-loglevel', 'warning', '-fflags', 'nobuffer', '-flags', 'low_delay',
     ...(grab === 'ddagrab' ? ['-f', 'lavfi', '-i', 'ddagrab=output_idx=0:framerate=30:draw_mouse=1']
       : ['-f', 'gdigrab', '-framerate', '30', '-draw_mouse', '1', '-thread_queue_size', '64', '-probesize', '1000000', '-analyzeduration', '0', '-i', 'desktop']),
     ...(audioDevice ? ['-f', 'dshow', '-thread_queue_size', '64', '-i', 'audio=' + audioDevice]
       : ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'])];
   const download = grab === 'ddagrab' ? 'hwdownload,format=bgra,' : '';
   const scale = `${download}scale=-2:min(${h}\\,ih),format=yuv420p`;
-  // Match the live output: one-second IDRs and two-second HLS segments.
+  // Half-second IDRs and segments keep local screen capture close to live.
   const gop = [...(encoder === 'h264_nvenc' ? ['-no-scenecut', '1', '-forced-idr', '1'] : ['-sc_threshold', '0']),
-    '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*1)'];
-  const hls = ['-f', 'hls', '-hls_time', '2', '-hls_list_size', '8', '-hls_delete_threshold', '32', '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time'];
+    '-g', '15', '-force_key_frames', 'expr:gte(t,n_forced*0.5)'];
+  const hls = ['-f', 'hls', '-hls_time', '0.5', '-hls_list_size', '4', '-hls_delete_threshold', '32', '-hls_flags', 'delete_segments+independent_segments+omit_endlist+program_date_time'];
   const phone = [...v, ...br, ...gop,
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
     ...hls,

@@ -17,7 +17,7 @@ const hub = createHub();
 const switches = createSwitchState(data => hub.switching(data));
 ch.onSwitch = channel => switches.request({ ...channel, logo: `${cfg.BASE}/api/logo/${channel.id}` });
 live.onBoundary = (key, segment, rendition) => switches.boundary(key.split(':')[0], segment, rendition);
-const liveState = () => { const cur = ch.liveChannel(); return cur && { ...cur, slate: live.onSlate, ...switches.fields(cur) }; };
+const liveState = () => { const cur = ch.liveChannel(); return cur && { ...cur, ...(screen.isScreen(cur.id) ? { lowLatency: true } : {}), slate: live.onSlate, ...switches.fields(cur) }; };
 // Keep legacy playlist URLs usable after their selected channel is replaced.
 const liveAliases = new Set();
 const sports = require('./sports').createSports({provider, epg, data: cfg.DATA, base: cfg.BASE});
