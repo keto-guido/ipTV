@@ -11,15 +11,20 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iptv-screen-test-'));
 Object.assign(cfg, { DATA: path.join(tmp, 'data'), HLS: path.join(tmp, 'hls'), SECRETS_FILE: path.join(tmp, 'none') });
 process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
 const realSpawn = cp.spawn, realSync = cp.spawnSync;
-let procs, screen, ch, providerCalls;
+let procs, screen, ch, providerCalls, devices, audioProbes, holdAudio;
+const originalAudioDevice = process.env.SCREEN_AUDIO_DEVICE;
 beforeEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
-  procs = []; providerCalls = [];
+  procs = []; providerCalls = []; devices = ''; audioProbes = []; holdAudio = false;
+  delete process.env.SCREEN_AUDIO_DEVICE;
   cp.spawnSync = () => ({ status: 1 });
   cp.spawn = (bin, args) => {
     const p = new EventEmitter();
     Object.assign(p, { args, stderr: new EventEmitter(), stdin: { write() { queueMicrotask(() => p.emit('exit', 0)); } }, kill() { p.killed = true; } });
-    if (args.includes('-frames:v') || args.includes('-list_devices')) queueMicrotask(() => p.emit('exit', args.some(a => a.startsWith('ddagrab=')) ? 1 : 0));
+    if (args.includes('-list_devices')) {
+      audioProbes.push(p);
+      if (!holdAudio) queueMicrotask(() => { p.stderr.emit('data', devices); p.emit('exit', 1); });
+    } else if (args.includes('-frames:v')) queueMicrotask(() => p.emit('exit', args.some(a => a.startsWith('ddagrab=')) ? 1 : 0));
     else procs.push(p);
     return p;
   };
@@ -29,7 +34,10 @@ beforeEach(() => {
   provider.streamUrl = id => { assert.notEqual(id, 'screen'); return 'http://stub.invalid/test'; };
   screen = require('../src/screen'); ch = require('../src/channels'); ch.init();
 });
-afterEach(async () => { await ch.shutdown(); cp.spawn = realSpawn; cp.spawnSync = realSync; });
+afterEach(async () => { await ch.shutdown(); cp.spawn = realSpawn; cp.spawnSync = realSync;
+  if (originalAudioDevice === undefined) delete process.env.SCREEN_AUDIO_DEVICE; else process.env.SCREEN_AUDIO_DEVICE = originalAudioDevice;
+});
+const settle = () => new Promise(resolve => setImmediate(resolve));
 async function enable() { ch.setSettings({ mckinleyScreen: true }); await screen.init('mock'); }
 
 test('local args retain output codecs, GOP, bitrates and HLS; no provider options', () => {
@@ -62,7 +70,7 @@ test('off is unavailable; enabling persists and never starts capture', async () 
 test('screen starts at provider cap without provider lookup; view supports nowplaying', async () => {
   ch.select('123'); assert.equal(ch.busy(), 1);
   await enable(); const r = ch.select('screen'); assert.equal(r.ok, true); assert.equal(ch.busy(), 1);
-  assert.equal(procs.length, 2); assert.deepEqual(providerCalls, ['123']);
+  await settle(); assert.equal(procs.length, 2); assert.deepEqual(providerCalls, ['123']);
   fs.writeFileSync(path.join(ch.dir('screen'), 'index.m3u8'), '#EXTM3U');
   const v = ch.list().find(c => c.id === 'screen');
   assert.equal(screen.nowPlaying(v).playing, true); assert.equal(screen.nowPlaying(v).state, 'running');
@@ -70,7 +78,7 @@ test('screen starts at provider cap without provider lookup; view supports nowpl
   assert.equal(ch.liveSource().lowLatency, true);
 });
 test('running screen consumes no provider slot and disabling stops it', async () => {
-  await enable(); ch.select('screen'); assert.equal(ch.busy(), 0);
+  await enable(); ch.select('screen'); await settle(); assert.equal(ch.busy(), 0);
   ch.select('123'); assert.equal(ch.busy(), 1);
   await ch.stop('123'); ch.select('screen');
   ch.setSettings({ mckinleyScreen: false }); await new Promise(resolve => setImmediate(resolve));
@@ -88,6 +96,9 @@ test('screen failures use bounded local retries even with 403 text', () => {
 test('loopback detection never chooses microphones', () => {
   assert.equal(screen.loopbackDevice('"Microphone (Loopback)" (audio)'), null);
   assert.equal(screen.loopbackDevice('"Stereo Mix" (audio)'), 'Stereo Mix');
+  const stream = 'SteelSeries Sonar - Stream (SteelSeries Sonar Virtual Audio Device)';
+  assert.equal(screen.loopbackDevice('"' + stream + '" (audio)'), stream);
+  assert.equal(screen.loopbackDevice('"SteelSeries Sonar - Microphone (SteelSeries Sonar Virtual Audio Device)" (audio)'), null);
 });
 test('LAN checks use forwarded client addresses; loopback always allowed', () => {
   const req = (ip, headers = {}) => ({ socket: { remoteAddress: ip }, headers });
@@ -113,5 +124,57 @@ test('restored screen remains stopped on viewer touch; explicit selection starts
   delete require.cache[require.resolve('../src/channels')]; ch = require('../src/channels'); ch.init();
   await screen.init('mock'); ch.touch('screen', 'viewer', true);
   assert.equal(procs.length, 0); assert.equal(ch.liveSource(), null);
-  ch.select('screen'); assert.equal(procs.length, 1);
+  ch.select('screen'); await settle(); assert.equal(procs.length, 1);
+});
+
+test('screen audio is re-probed on each start and exposed in diagnostics', async () => {
+  await enable(); ch.select('screen'); ch.select('screen'); await settle();
+  assert.equal(procs.length, 1); assert.equal(audioProbes.length, 1);
+  assert.ok(procs[0].args.includes('anullsrc=r=48000:cl=stereo'));
+  await ch.stop('screen');
+  const device = 'SteelSeries Sonar - Stream (SteelSeries Sonar Virtual Audio Device)';
+  devices = '"' + device + '" (audio)';
+  ch.select('screen'); await settle();
+  assert.equal(audioProbes.length, 2); assert.equal(procs.length, 2);
+  assert.ok(procs[1].args.includes('audio=' + device));
+  assert.equal(ch.screen().audioDevice, device); assert.equal(ch.screen().audio, device);
+});
+
+test('settings override persists, env wins, and clearing restores detection', async () => {
+  await enable(); devices = '"Stereo Mix" (audio)';
+  ch.setSettings({ screenAudioDevice: '  Custom capture  ' });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cfg.DATA, 'settings.json'))).screenAudioDevice, 'Custom capture');
+  ch.select('screen'); await settle();
+  assert.ok(procs[0].args.includes('audio=Custom capture'));
+  await ch.stop('screen');
+  process.env.SCREEN_AUDIO_DEVICE = '  Env capture  ';
+  ch.select('screen'); await settle();
+  assert.ok(procs[1].args.includes('audio=Env capture'));
+  await ch.stop('screen'); delete process.env.SCREEN_AUDIO_DEVICE;
+  assert.equal(ch.setSettings({ screenAudioDevice: 123 }).screenAudioDevice, 'Custom capture');
+  assert.equal(ch.setSettings({ screenAudioDevice: '' }).screenAudioDevice, null);
+  ch.select('screen'); await settle();
+  assert.ok(procs[2].args.includes('audio=Stereo Mix'));
+  assert.equal(ch.setSettings({ screenAudioDevice: 'Other' }).screenAudioDevice, 'Other');
+  assert.equal(ch.setSettings({ screenAudioDevice: null }).screenAudioDevice, null);
+});
+
+test('stop during audio probe prevents capture spawn', async () => {
+  await enable(); holdAudio = true;
+  ch.select('screen'); await settle();
+  assert.equal(ch.screen().status, 'probing'); assert.equal(audioProbes.length, 1);
+  await ch.stop('screen');
+  audioProbes[0].emit('exit', 1); await settle();
+  assert.equal(procs.length, 0); assert.equal(ch.has('screen'), false);
+});
+
+test('disabling or shutdown during audio probe prevents capture spawn', async () => {
+  await enable(); holdAudio = true;
+  ch.select('screen'); await settle();
+  ch.setSettings({ mckinleyScreen: false });
+  audioProbes[0].emit('exit', 1); await settle();
+  assert.equal(procs.length, 0);
+  ch.setSettings({ mckinleyScreen: true }); ch.select('screen'); await settle();
+  await ch.shutdown(); audioProbes[1].emit('exit', 1); await settle();
+  assert.equal(procs.length, 0);
 });

@@ -8,7 +8,7 @@ const screen = require('./screen');
 
 const SETTINGS_FILE = path.join(cfg.DATA, 'settings.json');
 const STATE_FILE = path.join(cfg.DATA, 'state.json');
-const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true, sportsListRefresh: true, mckinleyScreen: false };
+const DEFAULTS = { maxStreams: 1, resolution: 720, idleSec: 180, tvRendition: true, sportsListRefresh: true, mckinleyScreen: false, screenAudioDevice: null };
 const WAKE_DEBOUNCE_MS = 30e3;
 const BACKOFF_BASE = 5e3, BACKOFF_MAX = 300e3, RETRY_CAP = 6, STABLE_MS = 60e3;
 const REFUSED_RETRY_CAP = 3; // a 403 is retried far less patiently than a dropped connection
@@ -106,16 +106,27 @@ function ffArgs(id, out, tv) {
     '-hls_segment_filename', path.join(out, 'tv', 'seg_%05d.ts'), path.join(out, 'tv', 'index.m3u8')];
 }
 
-function start(c) {
-  if (c.proc || c.status === 'down' || c.status === 'backoff') return false;
+function start(c, capture = null) {
+  if (c.proc || c.probing || c.status === 'down' || c.status === 'backoff') return false;
   if (screen.isScreen(c.id)) {
     if (!settings.mckinleyScreen) { c.status = 'down'; c.reason = 'unavailable'; return false; }
-    if (!screen.result()) {
-      c.status = 'probing';
-      screen.init(cfg.FFMPEG, log).then(() => { if (chans.get(c.id) === c && c.wanted && c.status === 'probing') { c.status = 'idle'; start(c); } });
+    if (!capture) {
+      const token = c.probing = {};
+      c.status = 'probing'; c.stopping = false;
+      (async () => {
+        await screen.init(cfg.FFMPEG, log);
+        if (c.probing !== token) return;
+        const audio = await screen.probeAudio(cfg.FFMPEG, settings.screenAudioDevice);
+        if (c.probing !== token) return;
+        c.probing = null;
+        if (chans.get(c.id) !== c || !c.wanted || c.stopping || !settings.mckinleyScreen || c.proc || c.status !== 'probing') return;
+        screen.setAudio(audio);
+        log(audio.audioDevice ? 'screen audio: ' + audio.audioDevice : 'screen audio: silent AAC (no loopback device)');
+        start(c, screen.result());
+      })();
       return false;
     }
-    if (!screen.result().grab) { c.status = 'down'; c.reason = 'capture unavailable'; return false; }
+    if (!capture.grab) { c.status = 'down'; c.reason = 'capture unavailable'; return false; }
   }
   if (!screen.isScreen(c.id) && busy() >= settings.maxStreams) { c.status = 'idle'; return false; }
   const out = dirOf(c.id);
@@ -126,7 +137,7 @@ function start(c) {
   c.lastAccess = Date.now();
   c.lastViewerAt = null; c.runViewers = new Set();
   log(`start ${c.id} (${c.name}) ${encoder} ${settings.resolution}p${c.tv ? ' + tv 1080p' : ''}`);
-  const p = spawn(cfg.FFMPEG, screen.isScreen(c.id) ? screen.ffArgs({ encoder, tv: c.tv, out, height: settings.resolution, ...screen.result() }) : ffArgs(c.id, out, c.tv), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+  const p = spawn(cfg.FFMPEG, screen.isScreen(c.id) ? screen.ffArgs({ encoder, tv: c.tv, out, height: settings.resolution, ...capture }) : ffArgs(c.id, out, c.tv), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
   c.proc = p;
   p.stderr.on('data', d => {
     const s = redact(d.toString()).trim();
@@ -177,6 +188,7 @@ function rearm(c) {
   }
   c.wanted = true;
   saveState();
+  if (c.probing) return false;
   const wait = (c.startedAt || 0) + WAKE_DEBOUNCE_MS - Date.now();
   if (c.proc || wait <= 0) return start(c);
   c.lastAccess = Date.now(); c.reason = 'retry requested';
@@ -184,10 +196,10 @@ function rearm(c) {
 }
 
 function kill(c) {
+  c.probing = null; c.stopping = true;
   if (c.timer) { clearTimeout(c.timer); c.timer = null; }
   const p = c.proc;
   if (!p) return Promise.resolve();
-  c.stopping = true;
   return new Promise(res => {
     p.once('exit', res);
     try { p.stdin.write('q'); } catch {}
@@ -341,6 +353,7 @@ module.exports = {
     if (s.idleSec != null) settings.idleSec = Math.max(30, Math.min(3600, parseInt(s.idleSec, 10) || 180));
     if (s.sportsListRefresh != null) settings.sportsListRefresh = s.sportsListRefresh === true;
     if (s.tvRendition != null) settings.tvRendition = !!s.tvRendition;
+    if (s.screenAudioDevice === null || typeof s.screenAudioDevice === 'string') settings.screenAudioDevice = s.screenAudioDevice && s.screenAudioDevice.trim() || null;
     if (s.mckinleyScreen != null) {
       settings.mckinleyScreen = s.mckinleyScreen === true;
       if (!settings.mckinleyScreen) {

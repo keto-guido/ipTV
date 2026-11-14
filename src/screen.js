@@ -21,7 +21,7 @@ function probe(bin, args, timeout = 4000) {
 function loopbackDevice(text) {
   for (const line of text.split('\n')) {
     const m = line.match(/"([^"\r\n]+)".*\(audio\)/i);
-    if (m && !/microphone/i.test(m[1]) && /stereo mix|wave out mix|what u hear|loopback|cable output/i.test(m[1])) return m[1];
+    if (m && !/microphone/i.test(m[1]) && /stereo mix|wave out mix|what u hear|loopback|cable output|sonar - stream/i.test(m[1])) return m[1];
   }
   return null;
 }
@@ -34,15 +34,19 @@ function init(bin, log = () => {}) {
       const gdi = await probe(bin, ['-f', 'gdigrab', '-framerate', '30', '-i', 'desktop', '-frames:v', '1', '-f', 'null', '-']);
       grab = gdi.ok ? 'gdigrab' : null;
     }
-    const audio = await probe(bin, ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
-    const audioDevice = loopbackDevice(audio.tail);
-    cached = { grab, audioDevice, audio: audioDevice || 'silent AAC' };
+    cached = { grab, audioDevice: null, audio: 'silent AAC' };
     log('screen capture: ' + (grab || 'unavailable'));
-    log(audioDevice ? 'screen audio: ' + audioDevice : 'screen audio: silent AAC (no loopback device)');
     return cached;
   })();
   return pending;
 }
+async function probeAudio(bin, setting) {
+  const audio = await probe(bin, ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy']);
+  const trim = v => typeof v === 'string' ? v.trim() : '';
+  const audioDevice = trim(process.env.SCREEN_AUDIO_DEVICE) || trim(setting) || loopbackDevice(audio.tail);
+  return { audioDevice, audio: audioDevice || 'silent AAC' };
+}
+function setAudio(audio) { Object.assign(cached, audio); }
 function classifyExit({ failures = 0, ranMs = 0 }) {
   const n = (ranMs > 60000 ? 0 : failures) + 1;
   return { action: n > 3 ? 'down' : 'retry', failures: n, reason: n > 3 ? 'capture failed' : 'capture failed, retrying' };
@@ -91,4 +95,4 @@ function ffArgs({ encoder, tv, out, height = 720, grab = 'gdigrab', audioDevice 
 function nowPlaying(c) {
   return { id: ID, name: NAME, logo: null, group: 'Local', state: c.status, playing: !!c.ready, viewers: c.viewers, now: null, next: null };
 }
-module.exports = { nowPlaying, ID, NAME, isScreen, init, result: () => cached, probe, loopbackDevice, ffArgs, classifyExit, isLan, isLoopback };
+module.exports = { nowPlaying, ID, NAME, isScreen, init, probeAudio, setAudio, result: () => cached, probe, loopbackDevice, ffArgs, classifyExit, isLan, isLoopback };
