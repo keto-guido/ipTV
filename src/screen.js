@@ -68,12 +68,14 @@ function ffArgs({ encoder, tv, out, height = 720, grab = 'gdigrab', audioDevice 
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-bf', '0'];
   const br = h === 720 ? ['-b:v', '2200k', '-maxrate', '2500k', '-bufsize', '4400k'] : ['-b:v', '1200k', '-maxrate', '1400k', '-bufsize', '2400k'];
   const input = ['-hide_banner', '-nostats', '-loglevel', 'warning', '-fflags', 'nobuffer', '-flags', 'low_delay',
-    ...(grab === 'ddagrab' ? ['-f', 'lavfi', '-i', 'ddagrab=output_idx=0:framerate=30:draw_mouse=1']
+    ...(grab === 'ddagrab' ? []
       : ['-f', 'gdigrab', '-framerate', '30', '-draw_mouse', '1', '-thread_queue_size', '64', '-probesize', '1000000', '-analyzeduration', '0', '-i', 'desktop']),
     ...(audioDevice ? ['-f', 'dshow', '-thread_queue_size', '64', '-i', 'audio=' + audioDevice]
       : ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'])];
-  const download = grab === 'ddagrab' ? 'hwdownload,format=bgra,' : '';
-  const scale = `${download}scale=-2:min(${h}\\,ih),format=yuv420p`;
+  // Keep ddagrab a filter source so lagging dshow audio cannot throttle capture input pulls.
+  const source = grab === 'ddagrab' ? 'ddagrab=output_idx=0:framerate=30:draw_mouse=1,hwdownload,format=bgra,' : '[0:v:0]';
+  const audio = grab === 'ddagrab' ? '0:a:0' : '1:a:0';
+  const scale = `scale=-2:min(${h}\\,ih),format=yuv420p`;
   // Half-second IDRs and segments keep local screen capture close to live.
   const gop = [...(encoder === 'h264_nvenc' ? ['-no-scenecut', '1', '-forced-idr', '1'] : ['-sc_threshold', '0']),
     '-g', '15', '-force_key_frames', 'expr:gte(t,n_forced*0.5)'];
@@ -82,11 +84,13 @@ function ffArgs({ encoder, tv, out, height = 720, grab = 'gdigrab', audioDevice 
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
     ...hls,
     '-hls_segment_filename', path.join(out, 'seg_%05d.ts'), path.join(out, 'index.m3u8')];
-  if (!tv) return [...input, '-map', '0:v:0', '-map', '1:a:0', '-sn', '-dn', '-vf', scale, ...phone];
+  if (!tv) return grab === 'ddagrab'
+    ? [...input, '-filter_complex', `${source}${scale}[pv]`, '-map', '[pv]', '-map', audio, '-sn', '-dn', ...phone]
+    : [...input, '-map', '0:v:0', '-map', '1:a:0', '-sn', '-dn', '-vf', scale, ...phone];
   return [...input,
-    '-filter_complex', `[0:v:0]${download}split=2[p][t];[p]${scale.slice(download.length)}[pv];[t]scale=-2:min(1080\\,ih),format=yuv420p[tv]`,
-    '-map', '[pv]', '-map', '1:a:0', '-sn', '-dn', ...phone,
-    '-map', '[tv]', '-map', '1:a:0', '-sn', '-dn',
+    '-filter_complex', `${source}split=2[p][t];[p]${scale}[pv];[t]scale=-2:min(1080\\,ih),format=yuv420p[tv]`,
+    '-map', '[pv]', '-map', audio, '-sn', '-dn', ...phone,
+    '-map', '[tv]', '-map', audio, '-sn', '-dn',
     ...v, '-b:v', '7000k', '-maxrate', '8000k', '-bufsize', '14000k', ...gop,
     '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
     ...hls,

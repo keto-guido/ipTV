@@ -45,7 +45,7 @@ test('local args retain output codecs, GOP, bitrates and HLS; no provider option
     const a = screen.ffArgs({ encoder, height, grab, tv: true, out: tmp });
     const opt = k => a[a.indexOf(k) + 1];
     assert.ok(!a.includes('-user_agent')); assert.ok(!a.includes('-rw_timeout')); assert.ok(!a.some(x => /https?:/.test(x)));
-    assert.ok(a.includes('anullsrc=r=48000:cl=stereo')); assert.ok(a.includes('1:a:0'));
+    assert.ok(a.includes('anullsrc=r=48000:cl=stereo')); assert.ok(a.includes(grab === 'ddagrab' ? '0:a:0' : '1:a:0'));
     assert.equal(opt('-g'), '15'); assert.equal(opt('-force_key_frames'), 'expr:gte(t,n_forced*0.5)');
     assert.equal(opt('-hls_time'), '0.5'); assert.equal(opt('-hls_list_size'), '4'); assert.equal(opt('-b:v'), height === 720 ? '2200k' : '1200k');
     assert.equal(opt('-bf'), '0'); assert.equal(opt('-fflags'), 'nobuffer'); assert.equal(opt('-flags'), 'low_delay'); assert.ok(!a.includes('-re'));
@@ -60,6 +60,33 @@ test('local args retain output codecs, GOP, bitrates and HLS; no provider option
   const a = screen.ffArgs({ encoder: 'libx264', tv: false, out: tmp, audioDevice: 'Stereo Mix' });
   assert.ok(a.includes('audio=Stereo Mix')); assert.ok(!a.includes('anullsrc=r=48000:cl=stereo'));
 });
+test('ddagrab uses a filter source and input 0 audio; gdigrab retains input 1 audio', () => {
+  const source = 'ddagrab=output_idx=0:framerate=30:draw_mouse=1,hwdownload,format=bgra,';
+  for (const grab of ['ddagrab', 'gdigrab']) for (const tv of [false, true]) for (const audioDevice of [null, 'Stereo Mix']) {
+    const a = screen.ffArgs({ encoder: 'libx264', grab, tv, audioDevice, out: tmp });
+    const maps = a.flatMap((arg, i) => arg === '-map' ? [a[i + 1]] : []);
+    const inputs = a.flatMap((arg, i) => arg === '-i' ? [a[i + 1]] : []);
+    const audioInput = audioDevice ? 'audio=Stereo Mix' : 'anullsrc=r=48000:cl=stereo';
+    if (grab === 'ddagrab') {
+      assert.deepEqual(inputs, [audioInput]);
+      assert.ok(!inputs.some(input => input.startsWith('ddagrab=')));
+      const filter = a[a.indexOf('-filter_complex') + 1];
+      assert.ok(filter.startsWith(source));
+      assert.equal(filter, tv
+        ? `${source}split=2[p][t];[p]scale=-2:min(720\\,ih),format=yuv420p[pv];[t]scale=-2:min(1080\\,ih),format=yuv420p[tv]`
+        : `${source}scale=-2:min(720\\,ih),format=yuv420p[pv]`);
+      assert.deepEqual(maps, tv ? ['[pv]', '0:a:0', '[tv]', '0:a:0'] : ['[pv]', '0:a:0']);
+      assert.ok(!a.includes('-vf')); assert.ok(!a.includes('0:v:0'));
+      if (audioDevice) assert.deepEqual(a.slice(a.indexOf('-f'), a.indexOf('-i') + 2), ['-f', 'dshow', '-thread_queue_size', '64', '-i', audioInput]);
+    } else {
+      assert.equal(a[a.indexOf('-f') + 1], 'gdigrab');
+      assert.deepEqual(inputs, ['desktop', audioInput]);
+      assert.deepEqual(maps, tv ? ['[pv]', '1:a:0', '[tv]', '1:a:0'] : ['0:v:0', '1:a:0']);
+      if (!tv) assert.ok(a.includes('-vf'));
+    }
+  }
+});
+
 test('off is unavailable; enabling persists and never starts capture', async () => {
   assert.deepEqual(ch.select('screen'), { error: 'unavailable' });
   await enable(); assert.equal(procs.length, 0);
