@@ -83,8 +83,19 @@ function ffArgs(id, out, tv) {
     ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'cbr']
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency'];
   const br = h === 720 ? ['-b:v', '2200k', '-maxrate', '2500k', '-bufsize', '4400k'] : ['-b:v', '1200k', '-maxrate', '1400k', '-bufsize', '2400k'];
-  const input = ['-hide_banner', '-nostats', '-loglevel', 'warning', '-user_agent', cfg.UA,
-    '-rw_timeout', '15000000', '-i', provider.streamUrl(id)];
+  // Provider HLS is live and the account allows one connection. A single persistent
+  // HTTP connection, segment retries, and reconnect-on-timeout keep ffmpeg from
+  // skipping expired segments or exiting on a mid-stream TCP timeout (Windows
+  // ETIMEDOUT / error -138). Never reconnect on HTTP 403; classifyExit/backoff
+  // owns that. Keep -user_agent through -i contiguous so tests can swap the input.
+  const input = ['-hide_banner', '-nostats', '-loglevel', 'warning',
+    '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
+    '-reconnect_delay_max', '60',
+    '-http_persistent', '1', '-http_multiple', '0',
+    '-max_reload', '30', '-seg_max_retry', '5',
+    '-fflags', '+discardcorrupt+genpts',
+    '-user_agent', cfg.UA,
+    '-rw_timeout', '30000000', '-i', provider.streamUrl(id)];
   const scale = `scale=-2:min(${h}\\,ih),format=yuv420p`;
   // Both outputs: an IDR every second and 1 s segments, for the latency of the live playlists.
   // Source fps is unknown without probing upstream, so -g is the ceiling for inputs up to 60 fps; the forced keyframes set the real GOP.

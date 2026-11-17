@@ -19,8 +19,14 @@ const URL_STUB = 'http://stub.invalid/x.m3u8';
 
 // The full phone-only argument list. tv=true must keep this output apart from moving the scale into the split.
 function phoneOnly(codec, h, br) {
-  return ['-hide_banner', '-nostats', '-loglevel', 'warning', '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
-    '-rw_timeout', '15000000', '-i', URL_STUB, '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
+  return ['-hide_banner', '-nostats', '-loglevel', 'warning',
+    '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
+    '-reconnect_delay_max', '60',
+    '-http_persistent', '1', '-http_multiple', '0',
+    '-max_reload', '30', '-seg_max_retry', '5',
+    '-fflags', '+discardcorrupt+genpts',
+    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+    '-rw_timeout', '30000000', '-i', URL_STUB, '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn',
     '-vf', `scale=-2:min(${h}\\,ih),format=yuv420p`, ...codec, ...br, ...(codec === NVENC ? ['-no-scenecut', '1', '-forced-idr', '1'] : ['-sc_threshold', '0']),
     '-g', '60', '-force_key_frames', 'expr:gte(t,n_forced*1)',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
@@ -107,6 +113,22 @@ test('tv=true: one input only, so one provider connection', () => {
   const a = boot().ffArgs('123', OUT, true);
   assert.equal(a.filter(x => x === '-i').length, 1);
   assert.equal(a.filter(x => x === URL_STUB).length, 1);
+});
+
+test('provider input: single HTTP connection, retry/reconnect, no 403 reconnect, lavfi splice window intact', () => {
+  const a = boot().ffArgs('123', OUT, true);
+  assert.equal(a[a.indexOf('-http_multiple') + 1], '0');
+  assert.equal(a[a.indexOf('-http_persistent') + 1], '1');
+  assert.equal(a[a.indexOf('-seg_max_retry') + 1], '5');
+  assert.equal(a[a.indexOf('-max_reload') + 1], '30');
+  assert.equal(a[a.indexOf('-reconnect') + 1], '1');
+  assert.equal(a[a.indexOf('-reconnect_streamed') + 1], '1');
+  assert.equal(a[a.indexOf('-reconnect_on_network_error') + 1], '1');
+  assert.equal(a[a.indexOf('-reconnect_delay_max') + 1], '60');
+  assert.equal(a[a.indexOf('-rw_timeout') + 1], '30000000');
+  assert.ok(!a.includes('-reconnect_on_http_error'));
+  const i = a.indexOf('-user_agent');
+  assert.deepEqual(a.slice(i, i + 6), ['-user_agent', 'VLC/3.0.20 LibVLC/3.0.20', '-rw_timeout', '30000000', '-i', URL_STUB]);
 });
 
 test('default: a started channel gets the TV output and its directory', () => {
