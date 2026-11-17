@@ -64,7 +64,7 @@ function play(v) {
   });
 }
 function resume() { const t = front(); if (t && t.loaded && t.video.paused) play(t.video); }
-const HLS_CONFIG = { liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.05, backBufferLength: 30, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 };
+const HLS_CONFIG = { liveSyncDurationCount: 4, maxBufferLength: 30, maxLiveSyncPlaybackRate: 1, backBufferLength: 30, manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, fragLoadingMaxRetry: 6 };
 // Tune the existing live player only; restore provider defaults on switch-back.
 function tuneLive(t) {
   if (!t.live) return;
@@ -77,7 +77,7 @@ function tuneLive(t) {
     t.normalBuffer = { maxBufferLength: c.maxBufferLength, maxMaxBufferLength: c.maxMaxBufferLength, backBufferLength: c.backBufferLength };
     Object.assign(c, { liveSyncDuration: 1, liveMaxLatencyDuration: 3, maxLiveSyncPlaybackRate: 1.15, maxBufferLength: 3, maxMaxBufferLength: 6, backBufferLength: 3 });
   } else {
-    Object.assign(c, t.normalBuffer, { liveSyncDuration: undefined, liveMaxLatencyDuration: undefined, liveSyncDurationCount: HLS_CONFIG.liveSyncDurationCount, maxLiveSyncPlaybackRate: HLS_CONFIG.maxLiveSyncPlaybackRate });
+    Object.assign(c, t.normalBuffer, { liveSyncDuration: undefined, liveMaxLatencyDuration: undefined, liveSyncDurationCount: HLS_CONFIG.liveSyncDurationCount, maxLiveSyncPlaybackRate: HLS_CONFIG.maxLiveSyncPlaybackRate, maxBufferLength: HLS_CONFIG.maxBufferLength });
   }
 }
 function catchUpLive(t) {

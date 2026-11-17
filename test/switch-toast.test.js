@@ -50,8 +50,8 @@ test('screen player tuning restores count-based provider settings and guards cat
   assert.equal(run('t.video.currentTime'), 0);
   assert.equal(run('t.hls.config.liveSyncDuration'), undefined);
   assert.equal(run('t.hls.config.liveMaxLatencyDuration'), undefined);
-  assert.equal(run('t.hls.config.liveSyncDurationCount'), 3);
-  assert.equal(run('t.hls.config.maxLiveSyncPlaybackRate'), 1.05);
+  assert.equal(run('t.hls.config.liveSyncDurationCount'), 4);
+  assert.equal(run('t.hls.config.maxLiveSyncPlaybackRate'), 1);
   assert.equal(run('t.hls.config.maxBufferLength'), 30);
   assert.equal(run('t.hls.config.maxMaxBufferLength'), 600);
   assert.equal(run('t.hls.config.backBufferLength'), 30);
